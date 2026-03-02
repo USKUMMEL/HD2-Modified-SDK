@@ -99,6 +99,8 @@ from .ParticleModder import (
     HD2_UL_Emitters,
     Hd2VisualizerItem,
     HD2_UL_Visualizers,
+    Hd2LoadedParticleItem,
+    HD2_UL_LoadedParticles,
     Hd2ParticleModderSettings,
     HD2_OT_ColorPresetSave,
     HD2_OT_ColorPresetLoad,
@@ -107,6 +109,8 @@ from .ParticleModder import (
     HD2_OT_ColorSelectAll,
     HD2_OT_ColorSelectNone,
     HD2_OT_GraphEditor,
+    HD2_OT_LoadedParticleSelect,
+    HD2_OT_SetParticleTab,
     HD2_OT_ParticleModderLoad,
     HD2_OT_ParticleModderApply,
     HD2_OT_ParticleModderSave,
@@ -5645,6 +5649,8 @@ classes = (
     HD2_UL_Emitters,
     Hd2VisualizerItem,
     HD2_UL_Visualizers,
+    Hd2LoadedParticleItem,
+    HD2_UL_LoadedParticles,
     Hd2ParticleModderSettings,
     HD2_OT_ColorPresetSave,
     HD2_OT_ColorPresetLoad,
@@ -5653,6 +5659,8 @@ classes = (
     HD2_OT_ColorSelectAll,
     HD2_OT_ColorSelectNone,
     HD2_OT_GraphEditor,
+    HD2_OT_LoadedParticleSelect,
+    HD2_OT_SetParticleTab,
     HD2_OT_ParticleModderLoad,
     HD2_OT_ParticleModderApply,
     HD2_OT_ParticleModderSave,
@@ -5706,7 +5714,7 @@ def register():
     bpy.utils.register_class(ListItem)
     for t in Global_TypeIDs: # make all this into an item in another collection property
         setattr(bpy.types.Scene, f"list_{t}", CollectionProperty(type = ListItem))
-        setattr(bpy.types.Scene, f"index_{t}", IntProperty(name = f"index_{t}", default = 0))
+        setattr(bpy.types.Scene, f"index_{t}", IntProperty(name = f"index_{t}", default = 0, update=particle_modder_m._on_particle_index_change if t == ParticleID else None))
         setattr(bpy.types.Scene, f"filter_{t}", StringProperty(name = f"filter_{t}", default = ""))
         setattr(bpy.types.Scene, f"index_{t}_dummy", IntProperty(name = f"index_{t}_dummy", default = 5000000, set=SetSelected(t)))
     bpy.types.Scene.new_id_entry = StringProperty(name="new_id_entry", default="")

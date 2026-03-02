@@ -9,6 +9,7 @@ import json
 import gpu
 from gpu_extras.batch import batch_for_shader
 import blf
+from .utils.constants import ParticleID
 import bpy
 from bpy.props import (
     StringProperty,
@@ -35,6 +36,35 @@ class _ParticleModderState:
         self.graph_modal_running = False
         self.graph_drag_index = -1
         self.graph_rect = (40, 60, 360, 260)
+        self.loaded_cache = {}
+
+
+def _cache_current(settings):
+    if STATE.data is None or not STATE.filepath:
+        return
+    STATE.loaded_cache[STATE.filepath] = {
+        "label": STATE.filepath,
+        "data": bytearray(STATE.data),
+        "file_id": settings.entry_file_id,
+        "type_id": settings.entry_type_id,
+        "is_archive": settings.is_archive,
+    }
+
+
+def _on_particle_index_change(scene, context):
+    list_id = f"list_{ParticleID}"
+    index_id = f"index_{ParticleID}"
+    if not hasattr(scene, list_id) or not hasattr(scene, index_id):
+        return
+    mat_list = getattr(scene, list_id)
+    mat_index = getattr(scene, index_id)
+    if not mat_list or mat_index < 0 or mat_index >= len(mat_list):
+        return
+    entry = mat_list[mat_index]
+    try:
+        bpy.ops.helldiver2.particle_modder_edit(object_id=entry.item_name)
+    except Exception:
+        return
 
 STATE = _ParticleModderState()
 #endregion
@@ -741,6 +771,25 @@ class HD2_UL_Visualizers(UIList):
         layout.label(text=item.label)
 #endregion
 
+#region Loaded Particles
+class Hd2LoadedParticleItem(PropertyGroup):
+    key: StringProperty(name="Key", default="")
+    label: StringProperty(name="Label", default="")
+    file_id: StringProperty(name="File ID", default="")
+    is_archive: BoolProperty(name="Is Archive", default=False)
+
+
+class HD2_UL_LoadedParticles(UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        row = layout.row(align=True)
+        row.label(text=item.label)
+        if item.is_archive:
+            row.label(text=item.file_id)
+#endregion
+
+#region Operators: Auto Edit Particle Selection
+#endregion
+
 #region Properties
 class Hd2ParticleModderSettings(PropertyGroup):
     filepath: StringProperty(name="File", default="")
@@ -765,6 +814,8 @@ class Hd2ParticleModderSettings(PropertyGroup):
     emitters_index: IntProperty(name="Emitter Index", default=0)
     visualizers: CollectionProperty(type=Hd2VisualizerItem)
     visualizers_index: IntProperty(name="Visualizer Index", default=0)
+    loaded_particles: CollectionProperty(type=Hd2LoadedParticleItem)
+    loaded_particles_index: IntProperty(name="Loaded Particle Index", default=0)
     ui_tab: EnumProperty(
         name="Tab",
         items=[
@@ -774,6 +825,7 @@ class Hd2ParticleModderSettings(PropertyGroup):
             ("LIFETIME", "Lifetime", ""),
             ("VISUALIZERS", "Visualizers", ""),
             ("EMITTERS", "Emitters", ""),
+            ("PARTICLES", "Particles", ""),
         ],
         default="COLOR",
     )
@@ -953,6 +1005,50 @@ class HD2_OT_GraphEditor(Operator):
         context.window_manager.modal_handler_add(self)
         context.area.tag_redraw()
         return {"RUNNING_MODAL"}
+#endregion
+
+#region Operators: Loaded Particles
+class HD2_OT_LoadedParticleSelect(Operator):
+    bl_idname = "hd2.particle_loaded_select"
+    bl_label = "Select Loaded Particle"
+    bl_options = {"REGISTER", "UNDO"}
+
+    key: StringProperty()
+
+    def execute(self, context):
+        settings = context.scene.Hd2ParticleModderSettings
+        if self.key not in STATE.loaded_cache:
+            self.report({"ERROR"}, "Particle not found in cache")
+            return {"CANCELLED"}
+        _cache_current(settings)
+        entry = STATE.loaded_cache[self.key]
+        ok, err = load_from_bytes(
+            context,
+            bytearray(entry["data"]),
+            entry["label"],
+            entry.get("file_id", ""),
+            entry.get("type_id", ""),
+            entry.get("is_archive", False),
+            cache_current=False,
+        )
+        if not ok:
+            self.report({"ERROR"}, err)
+            return {"CANCELLED"}
+        return {"FINISHED"}
+#endregion
+
+#region Operators: Tabs
+class HD2_OT_SetParticleTab(Operator):
+    bl_idname = "hd2.particle_tab_set"
+    bl_label = "Set Particle Tab"
+    bl_options = {"REGISTER", "UNDO"}
+
+    tab: StringProperty()
+
+    def execute(self, context):
+        settings = context.scene.Hd2ParticleModderSettings
+        settings.ui_tab = self.tab
+        return {"FINISHED"}
 #endregion
 
 #region Operators: Color Picker
@@ -1153,11 +1249,35 @@ class HD2_PT_ParticleModder(Panel):
         else:
             btn_row.operator("hd2.particle_modder_apply", icon="CHECKMARK", text="Apply")
 
-        col = layout.column()
-        col.enabled = settings.has_data
+        particle_box = layout.box()
+        particle_box.label(text="Archive Particles", icon="FILE_FOLDER")
+        scene = context.scene
+        if hasattr(scene, "Hd2ToolPanelSettings"):
+            row = particle_box.row()
+            row.prop(scene.Hd2ToolPanelSettings, "SearchField", icon="VIEWZOOM", text="")
+        list_id = f"list_{ParticleID}"
+        index_id = f"index_{ParticleID}_dummy"
+        if hasattr(scene, list_id) and hasattr(scene, index_id):
+            particle_box.template_list("MY_UL_List", list_id, scene, list_id, scene, index_id, rows=6)
+            mat_list = getattr(scene, list_id)
+            mat_index = getattr(scene, index_id)
+            if mat_list and 0 <= mat_index < len(mat_list):
+                entry = mat_list[mat_index]
+                edit = particle_box.operator("helldiver2.particle_modder_edit", text="Edit Selected Particle", icon="PREFERENCES")
+                edit.object_id = entry.item_name
+            if hasattr(scene, "Hd2ToolPanelSettings"):
+                row = particle_box.row()
+                row.prop(scene.Hd2ToolPanelSettings, "LoadedArchives", text="Archive")
+        else:
+            particle_box.label(text="Particle list not available. Load an archive first.")
 
+        col = layout.column()
+
+        # Custom tab row (hide legacy PARTICLES)
         tabs = col.row(align=True)
-        tabs.prop(settings, "ui_tab", expand=True)
+        for tab in ("COLOR", "OPACITY", "INTENSITY", "LIFETIME", "VISUALIZERS", "EMITTERS"):
+            op = tabs.operator("hd2.particle_tab_set", text=tab.title(), depress=(settings.ui_tab == tab))
+            op.tab = tab
 
         if settings.ui_tab == "COLOR":
             box = col.box()
@@ -1176,6 +1296,8 @@ class HD2_PT_ParticleModder(Panel):
             tool.operator("hd2.particle_color_preset_load", text="Load P2").slot = 2
             row = box.row()
             row.template_list("HD2_UL_ColorGraphs", "", settings, "color_graphs", settings, "color_graphs_index", rows=6)
+            if not settings.has_data:
+                box.label(text="Load a particle to edit color graphs.")
             if settings.color_graphs and 0 <= settings.color_graphs_index < len(settings.color_graphs):
                 cgraph = settings.color_graphs[settings.color_graphs_index]
                 for i, point in enumerate(cgraph.points):
@@ -1208,6 +1330,8 @@ class HD2_PT_ParticleModder(Panel):
             tool.operator("hd2.particle_graph_editor", text="Open Graph")
             row = box.row()
             row.template_list("HD2_UL_OpacityGraphs", "", settings, "graphs", settings, "graphs_index", rows=6)
+            if not settings.has_data:
+                box.label(text="Load a particle to edit opacity graphs.")
             if settings.graphs and 0 <= settings.graphs_index < len(settings.graphs):
                 graph = settings.graphs[settings.graphs_index]
                 if graph.kind == "OPACITY":
@@ -1228,6 +1352,8 @@ class HD2_PT_ParticleModder(Panel):
             tool.operator("hd2.particle_graph_editor", text="Open Graph")
             row = box.row()
             row.template_list("HD2_UL_ScaleGraphs", "", settings, "graphs", settings, "graphs_index", rows=6)
+            if not settings.has_data:
+                box.label(text="Load a particle to edit intensity graphs.")
             if settings.graphs and 0 <= settings.graphs_index < len(settings.graphs):
                 graph = settings.graphs[settings.graphs_index]
                 if graph.kind == "SCALE":
@@ -1248,6 +1374,8 @@ class HD2_PT_ParticleModder(Panel):
             sub.label(text="Variables", icon="SORTBYEXT")
             row = box.row()
             row.template_list("HD2_UL_ParticleVariables", "", settings, "variables", settings, "variables_index", rows=4)
+            if not settings.has_data:
+                box.label(text="Load a particle to edit lifetime and variables.")
             if settings.variables and 0 <= settings.variables_index < len(settings.variables):
                 var = settings.variables[settings.variables_index]
                 box.prop(var, "name_hash")
@@ -1320,6 +1448,8 @@ CLASSES = (
     HD2_UL_Emitters,
     Hd2VisualizerItem,
     HD2_UL_Visualizers,
+    Hd2LoadedParticleItem,
+    HD2_UL_LoadedParticles,
     Hd2ParticleModderSettings,
     HD2_OT_ColorPresetSave,
     HD2_OT_ColorPresetLoad,
@@ -1328,6 +1458,8 @@ CLASSES = (
     HD2_OT_ColorSelectAll,
     HD2_OT_ColorSelectNone,
     HD2_OT_GraphEditor,
+    HD2_OT_LoadedParticleSelect,
+    HD2_OT_SetParticleTab,
     HD2_OT_ParticleModderLoad,
     HD2_OT_ParticleModderApply,
     HD2_OT_ParticleModderSave,
@@ -1344,8 +1476,10 @@ def unregister_properties():
         del bpy.types.Scene.Hd2ParticleModderSettings
 
 #region Public API
-def load_from_bytes(context, data, label, file_id=0, type_id=0, is_archive=False):
+def load_from_bytes(context, data, label, file_id=0, type_id=0, is_archive=False, cache_current=True):
     settings = context.scene.Hd2ParticleModderSettings
+    if cache_current:
+        _cache_current(settings)
     header = _parse_header(data)
     if header is None:
         return False, "Unsupported or invalid particle file"
@@ -1364,6 +1498,22 @@ def load_from_bytes(context, data, label, file_id=0, type_id=0, is_archive=False
     settings.entry_file_id = str(file_id)
     settings.entry_type_id = str(type_id)
     settings.has_data = True
+
+    found = None
+    for item in settings.loaded_particles:
+        if item.key == label:
+            found = item
+            break
+    if found is None:
+        item = settings.loaded_particles.add()
+        item.key = label
+        item.label = label
+        item.file_id = str(file_id)
+        item.is_archive = bool(is_archive)
+    else:
+        found.label = label
+        found.file_id = str(file_id)
+        found.is_archive = bool(is_archive)
 
     settings.variables.clear()
     hashes, vectors = _read_variables(data, header["version"], header["num_variables"])
@@ -1481,6 +1631,7 @@ def apply_settings_to_state(context):
     settings = context.scene.Hd2ParticleModderSettings
     if not settings.has_data or STATE.data is None:
         return False, "No particle data loaded"
+    _cache_current(settings)
     if settings.graphs and STATE.graph_curve is not None:
         idx = settings.graphs_index
         if 0 <= idx < len(settings.graphs):
