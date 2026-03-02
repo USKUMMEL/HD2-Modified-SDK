@@ -82,7 +82,31 @@ from .utils.memoryStream import MemoryStream
 from .utils.logger import PrettyPrint
 from .utils.constants import *
 from .ParticleModder import (
+    Hd2ParticleVariableItem,
+    HD2_UL_ParticleVariables,
+    Hd2GraphPoint,
+    Hd2GraphItem,
+    Hd2ColorPoint,
+    Hd2ColorGraphItem,
+    HD2_UL_Graphs,
+    HD2_UL_ColorGraphs,
+    HD2_UL_OpacityGraphs,
+    HD2_UL_ScaleGraphs,
+    HD2_UL_OtherGraphs,
+    Hd2EmitterRatePoint,
+    Hd2EmitterBurstPoint,
+    Hd2EmitterItem,
+    HD2_UL_Emitters,
+    Hd2VisualizerItem,
+    HD2_UL_Visualizers,
     Hd2ParticleModderSettings,
+    HD2_OT_ColorPresetSave,
+    HD2_OT_ColorPresetLoad,
+    HD2_OT_ColorPointSelect,
+    HD2_OT_ColorPick,
+    HD2_OT_ColorSelectAll,
+    HD2_OT_ColorSelectNone,
+    HD2_OT_GraphEditor,
     HD2_OT_ParticleModderLoad,
     HD2_OT_ParticleModderApply,
     HD2_OT_ParticleModderSave,
@@ -3707,6 +3731,84 @@ class SaveStingrayAnimationOperator(Operator):
         return {'FINISHED'}
 
 #region Operators: Particles
+class ParticleModderEditEntryOperator(Operator):
+    bl_label  = "Edit Particle"
+    bl_idname = "helldiver2.particle_modder_edit"
+    bl_description = "Open particle editor for this entry"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    object_id: StringProperty()
+
+    def execute(self, context):
+        try:
+            entry_id = int(self.object_id)
+        except ValueError:
+            self.report({'ERROR'}, f"Invalid particle ID: {self.object_id}")
+            return {'CANCELLED'}
+
+        entry = Global_TocManager.GetEntry(entry_id, ParticleID, SearchAll=True, IgnorePatch=False)
+        if entry is None:
+            self.report({'ERROR'}, f"Particle entry not found: {entry_id}")
+            return {'CANCELLED'}
+
+        ok, err = particle_modder_m.load_from_bytes(
+            context,
+            bytearray(entry.TocData),
+            f"archive:{entry_id}",
+            entry_id,
+            ParticleID,
+            True,
+        )
+        if not ok:
+            self.report({'ERROR'}, err)
+            return {'CANCELLED'}
+
+        return {'FINISHED'}
+
+
+class ParticleModderApplyEntryOperator(Operator):
+    bl_label  = "Apply Particle Edits"
+    bl_idname = "helldiver2.particle_modder_apply_entry"
+    bl_description = "Apply particle edits to the archive entry (patch)"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        settings = context.scene.Hd2ParticleModderSettings
+        if not settings.has_data or not settings.is_archive:
+            self.report({'ERROR'}, "No archive particle loaded")
+            return {'CANCELLED'}
+
+        ok, err = particle_modder_m.apply_settings_to_state(context)
+        if not ok:
+            self.report({'ERROR'}, err)
+            return {'CANCELLED'}
+
+        try:
+            entry_file_id = int(settings.entry_file_id)
+            entry_type_id = int(settings.entry_type_id)
+        except ValueError:
+            self.report({'ERROR'}, "Invalid entry IDs")
+            return {'CANCELLED'}
+
+        entry = Global_TocManager.GetEntry(entry_file_id, entry_type_id, SearchAll=True, IgnorePatch=False)
+        if entry is None:
+            self.report({'ERROR'}, "Entry not found")
+            return {'CANCELLED'}
+
+        if not Global_TocManager.IsInPatch(entry):
+            try:
+                entry = Global_TocManager.AddEntryToPatch(entry_file_id, entry_type_id)
+            except Exception as exc:
+                self.report({'ERROR'}, str(exc))
+                return {'CANCELLED'}
+            if entry is None:
+                self.report({'ERROR'}, "Failed to add entry to patch")
+                return {'CANCELLED'}
+
+        entry.SetData(bytearray(particle_modder_m.STATE.data), bytearray(entry.GpuData), bytearray(entry.StreamData), True)
+        self.report({'INFO'}, f"Applied edits to particle {entry.FileID}")
+        return {'FINISHED'}
+
 class SaveStingrayParticleOperator(Operator):
     bl_label  = "Save Particle"
     bl_idname = "helldiver2.particle_save"
@@ -4734,6 +4836,7 @@ class MY_UL_List(UIList):
                 #row.operator("helldiver2.material_showeditor", icon='MOD_LINEART', text="").object_id = str(Entry.FileID)
                 #self.draw_material_editor(Entry, box, row)
             elif entry_type == ParticleID:
+                row.operator("helldiver2.particle_modder_edit", icon='PREFERENCES', text="").object_id = item.item_name
                 row.operator("helldiver2.particle_search_used_ids", icon='VIEWZOOM', text="").object_id = item.item_name
             elif entry_type == AnimationID:
                 row.operator("helldiver2.archive_animation_import", icon="IMPORT", text="").object_id = item.item_name
@@ -5523,7 +5626,33 @@ classes = (
     MeshFixOperator,
     ImportStingrayParticleOperator,
     SaveStingrayParticleOperator,
+    ParticleModderEditEntryOperator,
+    ParticleModderApplyEntryOperator,
+    Hd2ParticleVariableItem,
+    HD2_UL_ParticleVariables,
+    Hd2GraphPoint,
+    Hd2GraphItem,
+    Hd2ColorPoint,
+    Hd2ColorGraphItem,
+    HD2_UL_Graphs,
+    HD2_UL_ColorGraphs,
+    HD2_UL_OpacityGraphs,
+    HD2_UL_ScaleGraphs,
+    HD2_UL_OtherGraphs,
+    Hd2EmitterRatePoint,
+    Hd2EmitterBurstPoint,
+    Hd2EmitterItem,
+    HD2_UL_Emitters,
+    Hd2VisualizerItem,
+    HD2_UL_Visualizers,
     Hd2ParticleModderSettings,
+    HD2_OT_ColorPresetSave,
+    HD2_OT_ColorPresetLoad,
+    HD2_OT_ColorPointSelect,
+    HD2_OT_ColorPick,
+    HD2_OT_ColorSelectAll,
+    HD2_OT_ColorSelectNone,
+    HD2_OT_GraphEditor,
     HD2_OT_ParticleModderLoad,
     HD2_OT_ParticleModderApply,
     HD2_OT_ParticleModderSave,
@@ -5566,9 +5695,9 @@ def register():
     LoadArchiveHashes()
     LoadShaderVariables(Global_variablespath)
     LoadBoneHashes(Global_bonehashpath, Global_BoneNames)
-    particle_modder_m.register_properties()
     for cls in classes:
         bpy.utils.register_class(cls)
+    particle_modder_m.register_properties()
     Scene.Hd2ToolPanelSettings = PointerProperty(type=Hd2ToolPanelSettings)
     bpy.utils.register_class(WM_MT_button_context)
     bpy.types.VIEW3D_MT_object_context_menu.append(CustomPropertyContext)
@@ -5585,14 +5714,16 @@ def register():
 def unregister():
     bpy.utils.unregister_class(WM_MT_button_context)
     del Scene.Hd2ToolPanelSettings
-    particle_modder_m.unregister_properties()
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
+    particle_modder_m.unregister_properties()
     bpy.types.VIEW3D_MT_object_context_menu.remove(CustomPropertyContext)
     bpy.types.VIEW3D_MT_armature_context_menu.remove(CustomBoneContext)
     for t in Global_TypeIDs:
-        delattr(bpy.types.Scene, f"list_{t}")
-        delattr(bpy.types.Scene, f"index_{t}")
+        if hasattr(bpy.types.Scene, f"list_{t}"):
+            delattr(bpy.types.Scene, f"list_{t}")
+        if hasattr(bpy.types.Scene, f"index_{t}"):
+            delattr(bpy.types.Scene, f"index_{t}")
     bpy.utils.unregister_class(MY_UL_List)
     bpy.utils.unregister_class(ListItem)
 
