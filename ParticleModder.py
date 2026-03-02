@@ -501,16 +501,37 @@ class HD2_UL_ParticleVariables(UIList):
 #endregion
 
 #region Color Sync
+_COLOR_SYNC_GUARD = False
+
+
 def _sync_color_to_rgb(self, context):
-    if self.r != self.color[0] or self.g != self.color[1] or self.b != self.color[2]:
-        self.r = self.color[0]
-        self.g = self.color[1]
-        self.b = self.color[2]
+    global _COLOR_SYNC_GUARD
+    if _COLOR_SYNC_GUARD:
+        return
+    _COLOR_SYNC_GUARD = True
+    try:
+        if self.r != self.color[0] or self.g != self.color[1] or self.b != self.color[2]:
+            self.r = float(self.color[0]) * 255.0
+            self.g = float(self.color[1]) * 255.0
+            self.b = float(self.color[2]) * 255.0
+    finally:
+        _COLOR_SYNC_GUARD = False
 
 
 def _sync_rgb_to_color(self, context):
-    if self.color[0] != self.r or self.color[1] != self.g or self.color[2] != self.b:
-        self.color = (self.r, self.g, self.b)
+    global _COLOR_SYNC_GUARD
+    if _COLOR_SYNC_GUARD:
+        return
+    _COLOR_SYNC_GUARD = True
+    try:
+        if self.color[0] != self.r or self.color[1] != self.g or self.color[2] != self.b:
+            self.color = (
+                max(0.0, min(1.0, float(self.r) / 255.0)),
+                max(0.0, min(1.0, float(self.g) / 255.0)),
+                max(0.0, min(1.0, float(self.b) / 255.0)),
+            )
+    finally:
+        _COLOR_SYNC_GUARD = False
 #endregion
 
 #region Curve Mapping
@@ -677,14 +698,51 @@ class HD2_UL_Graphs(UIList):
 
 class HD2_UL_ColorGraphs(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        layout.label(text=item.label)
+        row = layout.row(align=True)
+        row.label(text=item.label)
+        for i, point in enumerate(item.points):
+            col = row.column(align=True)
+            if getattr(data, "show_time_color", True):
+                split_t = col.split(factor=0.65, align=True)
+                split_t.label(text=f"{point.x:.4f}")
+                key = f"color:{index}:{i}:time"
+                selected = key in _parse_selected_cells(data)
+                op = split_t.operator("hd2.particle_cell_select", text="", depress=selected, icon="CHECKBOX_HLT" if selected else "CHECKBOX_DEHLT")
+                op.key = key
+            split = col.split(factor=0.65, align=True)
+            split.prop(point, "color", text="")
+            keyc = f"color:{index}:{i}:color"
+            selectedc = keyc in _parse_selected_cells(data)
+            opc = split.operator("hd2.particle_cell_select", text="", depress=selectedc, icon="CHECKBOX_HLT" if selectedc else "CHECKBOX_DEHLT")
+            opc.key = keyc
 
 
 class _HD2_UL_GraphsBase(UIList):
     graph_kind = ""
 
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        layout.label(text=item.label)
+        row = layout.row(align=True)
+        row.label(text=item.label)
+        for i, point in enumerate(item.points):
+            col = row.column(align=True)
+            show_time = True
+            if self.graph_kind == "OPACITY":
+                show_time = getattr(data, "show_time_opacity", True)
+            elif self.graph_kind == "SCALE":
+                show_time = getattr(data, "show_time_intensity", True)
+            if show_time:
+                split_t = col.split(factor=0.65, align=True)
+                split_t.label(text=f"{point.x:.4f}")
+                key = f"graph:{index}:{i}:time"
+                selected = key in _parse_selected_cells(data)
+                op = split_t.operator("hd2.particle_cell_select", text="", depress=selected, icon="CHECKBOX_HLT" if selected else "CHECKBOX_DEHLT")
+                op.key = key
+            split_v = col.split(factor=0.65, align=True)
+            split_v.label(text=f"{point.y:.4f}")
+            keyv = f"graph:{index}:{i}:value"
+            selectedv = keyv in _parse_selected_cells(data)
+            opv = split_v.operator("hd2.particle_cell_select", text="", depress=selectedv, icon="CHECKBOX_HLT" if selectedv else "CHECKBOX_DEHLT")
+            opv.key = keyv
 
     def filter_items(self, context, data, propname):
         items = getattr(data, propname)
@@ -810,6 +868,8 @@ class Hd2ParticleModderSettings(PropertyGroup):
     color_graphs_index: IntProperty(name="Color Graph Index", default=0)
     color_point_index: IntProperty(name="Color Point Index", default=0)
     color_selected_indices: StringProperty(name="Color Selected", default="")
+    selected_cells: StringProperty(name="Selected Cells", default="")
+    last_selected_cell: StringProperty(name="Last Selected Cell", default="")
     emitters: CollectionProperty(type=Hd2EmitterItem)
     emitters_index: IntProperty(name="Emitter Index", default=0)
     visualizers: CollectionProperty(type=Hd2VisualizerItem)
@@ -1102,7 +1162,7 @@ class HD2_OT_ColorPick(Operator):
             self.report({"ERROR"}, "Invalid color point selection")
             return {"CANCELLED"}
         point = graph.points[settings.color_point_index]
-        self.color = (point.r, point.g, point.b)
+        self.color = point.color
         return context.window_manager.invoke_props_dialog(self)
 
     def execute(self, context):
@@ -1120,8 +1180,10 @@ class HD2_OT_ColorPick(Operator):
             if idx < 0 or idx >= len(graph.points):
                 continue
             point = graph.points[idx]
-            point.r, point.g, point.b = self.color
             point.color = self.color
+            point.r = self.color[0] * 255.0
+            point.g = self.color[1] * 255.0
+            point.b = self.color[2] * 255.0
         return {"FINISHED"}
 #endregion
 
@@ -1152,6 +1214,63 @@ class HD2_OT_ColorSelectNone(Operator):
         settings = context.scene.Hd2ParticleModderSettings
         settings.color_selected_indices = ""
         return {"FINISHED"}
+#endregion
+
+#region Operators: Cell Selection/Edit
+def _parse_selected_cells(settings):
+    if not settings.selected_cells:
+        return []
+    return [s for s in settings.selected_cells.split("|") if s]
+
+
+def _set_selected_cells(settings, cells):
+    settings.selected_cells = "|".join(cells)
+
+
+class HD2_OT_CellSelect(Operator):
+    bl_idname = "hd2.particle_cell_select"
+    bl_label = "Select Cell"
+    bl_options = {"REGISTER", "UNDO"}
+
+    key: StringProperty()
+    toggle: BoolProperty(default=True)
+
+    def invoke(self, context, event):
+        self._shift = event.shift
+        self._ctrl = event.ctrl
+        return self.execute(context)
+
+    def execute(self, context):
+        settings = context.scene.Hd2ParticleModderSettings
+        cells = _parse_selected_cells(settings)
+        key = self.key
+        if self._shift and settings.last_selected_cell:
+            # range select only within same group/graph/field
+            try:
+                g1, gi1, pi1, f1 = settings.last_selected_cell.split(":")
+                g2, gi2, pi2, f2 = key.split(":")
+                if g1 == g2 and gi1 == gi2 and f1 == f2:
+                    start = min(int(pi1), int(pi2))
+                    end = max(int(pi1), int(pi2))
+                    for i in range(start, end + 1):
+                        cells.append(f"{g1}:{gi1}:{i}:{f1}")
+                else:
+                    cells.append(key)
+            except Exception:
+                cells.append(key)
+        elif self._ctrl:
+            if key in cells:
+                cells = [c for c in cells if c != key]
+            else:
+                cells.append(key)
+        else:
+            if key not in cells:
+                cells.append(key)
+        _set_selected_cells(settings, cells)
+        settings.last_selected_cell = key
+        return {"FINISHED"}
+
+
 #endregion
 
 #region Operators
@@ -1294,30 +1413,15 @@ class HD2_PT_ParticleModder(Panel):
             tool.operator("hd2.particle_color_preset_save", text="Save P2").slot = 2
             tool.operator("hd2.particle_color_preset_load", text="Load P1").slot = 1
             tool.operator("hd2.particle_color_preset_load", text="Load P2").slot = 2
-            row = box.row()
-            row.template_list("HD2_UL_ColorGraphs", "", settings, "color_graphs", settings, "color_graphs_index", rows=6)
             if not settings.has_data:
                 box.label(text="Load a particle to edit color graphs.")
-            if settings.color_graphs and 0 <= settings.color_graphs_index < len(settings.color_graphs):
-                cgraph = settings.color_graphs[settings.color_graphs_index]
-                for i, point in enumerate(cgraph.points):
-                    r = box.row(align=True)
-                    if settings.show_time_color:
-                        r.prop(point, "x", text="Time")
-                    r.prop(point, "color", text="")
-                    r.prop(point, "r", text="R")
-                    r.prop(point, "g", text="G")
-                    r.prop(point, "b", text="B")
-                    selected = False
-                    if settings.color_selected_indices:
-                        selected = str(i) in settings.color_selected_indices.split(",")
-                    sel = r.operator(
-                        "hd2.particle_color_point_select",
-                        text="",
-                        icon="CHECKBOX_HLT" if selected else "CHECKBOX_DEHLT",
-                    )
-                    sel.index = i
-                    sel.toggle = True
+            header = box.row(align=True)
+            header.label(text="")
+            for i in range(1, 11):
+                if settings.show_time_color:
+                    header.label(text="")
+                header.label(text=f"C{i}")
+            box.template_list("HD2_UL_ColorGraphs", "", settings, "color_graphs", settings, "color_graphs_index", rows=8)
 
         elif settings.ui_tab == "OPACITY":
             box = col.box()
@@ -1328,18 +1432,15 @@ class HD2_PT_ParticleModder(Panel):
             tool = box.row(align=True)
             tool.prop(settings, "show_time_opacity", text="Time")
             tool.operator("hd2.particle_graph_editor", text="Open Graph")
-            row = box.row()
-            row.template_list("HD2_UL_OpacityGraphs", "", settings, "graphs", settings, "graphs_index", rows=6)
             if not settings.has_data:
                 box.label(text="Load a particle to edit opacity graphs.")
-            if settings.graphs and 0 <= settings.graphs_index < len(settings.graphs):
-                graph = settings.graphs[settings.graphs_index]
-                if graph.kind == "OPACITY":
-                    for point in graph.points:
-                        r = box.row(align=True)
-                        if settings.show_time_opacity:
-                            r.prop(point, "x", text="Time")
-                        r.prop(point, "y", text="Opacity")
+            header = box.row(align=True)
+            header.label(text="")
+            for i in range(1, 11):
+                if settings.show_time_opacity:
+                    header.label(text="")
+                header.label(text=f"O{i}")
+            box.template_list("HD2_UL_OpacityGraphs", "", settings, "graphs", settings, "graphs_index", rows=8)
 
         elif settings.ui_tab == "INTENSITY":
             box = col.box()
@@ -1350,18 +1451,15 @@ class HD2_PT_ParticleModder(Panel):
             tool = box.row(align=True)
             tool.prop(settings, "show_time_intensity", text="Time")
             tool.operator("hd2.particle_graph_editor", text="Open Graph")
-            row = box.row()
-            row.template_list("HD2_UL_ScaleGraphs", "", settings, "graphs", settings, "graphs_index", rows=6)
             if not settings.has_data:
                 box.label(text="Load a particle to edit intensity graphs.")
-            if settings.graphs and 0 <= settings.graphs_index < len(settings.graphs):
-                graph = settings.graphs[settings.graphs_index]
-                if graph.kind == "SCALE":
-                    for point in graph.points:
-                        r = box.row(align=True)
-                        if settings.show_time_intensity:
-                            r.prop(point, "x", text="Time")
-                        r.prop(point, "y", text="Scale")
+            header = box.row(align=True)
+            header.label(text="")
+            for i in range(1, 11):
+                if settings.show_time_intensity:
+                    header.label(text="")
+                header.label(text=f"I{i}")
+            box.template_list("HD2_UL_ScaleGraphs", "", settings, "graphs", settings, "graphs_index", rows=8)
 
         elif settings.ui_tab == "LIFETIME":
             box = col.box()
@@ -1459,6 +1557,7 @@ CLASSES = (
     HD2_OT_ColorSelectNone,
     HD2_OT_GraphEditor,
     HD2_OT_LoadedParticleSelect,
+    HD2_OT_CellSelect,
     HD2_OT_SetParticleTab,
     HD2_OT_ParticleModderLoad,
     HD2_OT_ParticleModderApply,
@@ -1572,7 +1671,11 @@ def load_from_bytes(context, data, label, file_id=0, type_id=0, is_archive=False
                 pt.r = g.y[p][0]
                 pt.g = g.y[p][1]
                 pt.b = g.y[p][2]
-                pt.color = (pt.r, pt.g, pt.b)
+                pt.color = (
+                    max(0.0, min(1.0, pt.r / 255.0)),
+                    max(0.0, min(1.0, pt.g / 255.0)),
+                    max(0.0, min(1.0, pt.b / 255.0)),
+                )
 
     settings.graphs_index = 0 if len(settings.graphs) > 0 else 0
     settings.color_graphs_index = 0 if len(settings.color_graphs) > 0 else 0
