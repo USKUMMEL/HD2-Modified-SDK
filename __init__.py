@@ -108,6 +108,9 @@ from .ParticleModder import (
     HD2_OT_ColorPick,
     HD2_OT_ColorSelectAll,
     HD2_OT_ColorSelectNone,
+    HD2_OT_ColorApplySelected,
+    HD2_MT_ColorSave,
+    HD2_MT_ColorLoad,
     HD2_OT_GraphEditor,
     HD2_OT_LoadedParticleSelect,
     HD2_OT_CellSelect,
@@ -3735,6 +3738,8 @@ class SaveStingrayAnimationOperator(Operator):
         self.report({'INFO'}, f"Saved Animation")
         return {'FINISHED'}
 
+#endregion
+
 #region Operators: Particles
 class ParticleModderEditEntryOperator(Operator):
     bl_label  = "Edit Particle"
@@ -5659,6 +5664,9 @@ classes = (
     HD2_OT_ColorPick,
     HD2_OT_ColorSelectAll,
     HD2_OT_ColorSelectNone,
+    HD2_OT_ColorApplySelected,
+    HD2_MT_ColorSave,
+    HD2_MT_ColorLoad,
     HD2_OT_GraphEditor,
     HD2_OT_LoadedParticleSelect,
     HD2_OT_CellSelect,

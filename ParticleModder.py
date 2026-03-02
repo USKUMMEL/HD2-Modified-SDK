@@ -21,7 +21,7 @@ from bpy.props import (
     EnumProperty,
     FloatVectorProperty,
 )
-from bpy.types import Operator, Panel, PropertyGroup, UIList
+from bpy.types import Operator, Panel, PropertyGroup, UIList, Menu
 from bpy_extras.io_utils import ImportHelper, ExportHelper
 #endregion
 
@@ -39,15 +39,19 @@ class _ParticleModderState:
         self.loaded_cache = {}
 
 
-def _cache_current(settings):
+def _cache_current(settings, flush=True):
     if STATE.data is None or not STATE.filepath:
         return
+    if flush:
+        _apply_settings_to_state_data(settings)
     STATE.loaded_cache[STATE.filepath] = {
         "label": STATE.filepath,
         "data": bytearray(STATE.data),
         "file_id": settings.entry_file_id,
         "type_id": settings.entry_type_id,
         "is_archive": settings.is_archive,
+        "selected_cells": settings.selected_cells,
+        "last_selected_cell": settings.last_selected_cell,
     }
 
 
@@ -448,6 +452,46 @@ def _scan_visualizers(data: bytearray, graph_infos):
     return vis_list
 
 
+def _parse_selected_cells_value(selected_cells):
+    if not selected_cells:
+        return []
+    return [s for s in selected_cells.split("|") if s]
+
+
+def _selected_color_cells_map_from_cells(cells):
+    mapping = {}
+    for key in cells:
+        parts = key.split(":")
+        if len(parts) != 4:
+            continue
+        group, gidx, pidx, field = parts
+        if group != "color" or field != "color":
+            continue
+        gidx_i = int(gidx)
+        pidx_i = int(pidx)
+        mapping.setdefault(gidx_i, set()).add(pidx_i)
+    return mapping
+
+
+def _apply_color_to_bytes(data: bytearray, version: int, num_variables: int, num_systems: int, selection_map, color_rgb):
+    graph_infos = _scan_graphs(data, version, num_variables, num_systems)
+    flat_offsets = []
+    for info in graph_infos:
+        for off in info.color_offsets:
+            flat_offsets.append(info.offset + off)
+    r, g, b = color_rgb
+    for gidx, points in selection_map.items():
+        if gidx < 0 or gidx >= len(flat_offsets):
+            continue
+        base = flat_offsets[gidx]
+        color_base = base + (_GRAPH_POINTS * 4)
+        for pidx in points:
+            if pidx < 0 or pidx >= _GRAPH_POINTS:
+                continue
+            pos = color_base + (pidx * 12)
+            struct.pack_into("<fff", data, pos, float(r), float(g), float(b))
+
+
 def _write_variables(data: bytearray, version: int, variables):
     num_variables = len(variables)
     offset = _variables_offset(version)
@@ -510,10 +554,13 @@ def _sync_color_to_rgb(self, context):
         return
     _COLOR_SYNC_GUARD = True
     try:
-        if self.r != self.color[0] or self.g != self.color[1] or self.b != self.color[2]:
-            self.r = float(self.color[0]) * 255.0
-            self.g = float(self.color[1]) * 255.0
-            self.b = float(self.color[2]) * 255.0
+        c0 = max(0.0, min(1.0, float(self.color[0])))
+        c1 = max(0.0, min(1.0, float(self.color[1])))
+        c2 = max(0.0, min(1.0, float(self.color[2])))
+        if self.r != c0 or self.g != c1 or self.b != c2:
+            self.r = c0 * 255.0
+            self.g = c1 * 255.0
+            self.b = c2 * 255.0
     finally:
         _COLOR_SYNC_GUARD = False
 
@@ -681,6 +728,10 @@ class Hd2ColorPoint(PropertyGroup):
         size=3,
         subtype="COLOR",
         default=(0.0, 0.0, 0.0),
+        min=0.0,
+        max=1.0,
+        soft_min=0.0,
+        soft_max=1.0,
         update=_sync_color_to_rgb,
     )
 
@@ -704,7 +755,7 @@ class HD2_UL_ColorGraphs(UIList):
             col = row.column(align=True)
             if getattr(data, "show_time_color", True):
                 split_t = col.split(factor=0.65, align=True)
-                split_t.label(text=f"{point.x:.4f}")
+                split_t.prop(point, "x", text="")
                 key = f"color:{index}:{i}:time"
                 selected = key in _parse_selected_cells(data)
                 op = split_t.operator("hd2.particle_cell_select", text="", depress=selected, icon="CHECKBOX_HLT" if selected else "CHECKBOX_DEHLT")
@@ -732,13 +783,13 @@ class _HD2_UL_GraphsBase(UIList):
                 show_time = getattr(data, "show_time_intensity", True)
             if show_time:
                 split_t = col.split(factor=0.65, align=True)
-                split_t.label(text=f"{point.x:.4f}")
+                split_t.prop(point, "x", text="")
                 key = f"graph:{index}:{i}:time"
                 selected = key in _parse_selected_cells(data)
                 op = split_t.operator("hd2.particle_cell_select", text="", depress=selected, icon="CHECKBOX_HLT" if selected else "CHECKBOX_DEHLT")
                 op.key = key
             split_v = col.split(factor=0.65, align=True)
-            split_v.label(text=f"{point.y:.4f}")
+            split_v.prop(point, "y", text="")
             keyv = f"graph:{index}:{i}:value"
             selectedv = keyv in _parse_selected_cells(data)
             opv = split_v.operator("hd2.particle_cell_select", text="", depress=selectedv, icon="CHECKBOX_HLT" if selectedv else "CHECKBOX_DEHLT")
@@ -870,6 +921,7 @@ class Hd2ParticleModderSettings(PropertyGroup):
     color_selected_indices: StringProperty(name="Color Selected", default="")
     selected_cells: StringProperty(name="Selected Cells", default="")
     last_selected_cell: StringProperty(name="Last Selected Cell", default="")
+    color_apply: FloatVectorProperty(name="Color", size=3, subtype="COLOR", default=(1.0, 1.0, 1.0), min=0.0, max=1.0, soft_min=0.0, soft_max=1.0)
     emitters: CollectionProperty(type=Hd2EmitterItem)
     emitters_index: IntProperty(name="Emitter Index", default=0)
     visualizers: CollectionProperty(type=Hd2VisualizerItem)
@@ -959,7 +1011,11 @@ class HD2_OT_ColorPresetLoad(Operator):
             point.r = r
             point.g = g
             point.b = b
-            point.color = (r, g, b)
+            point.color = (
+                (r / 255.0) * 1000.0,
+                (g / 255.0) * 1000.0,
+                (b / 255.0) * 1000.0,
+            )
         return {"FINISHED"}
 #endregion
 
@@ -1141,50 +1197,6 @@ class HD2_OT_ColorPointSelect(Operator):
         return {"FINISHED"}
 
 
-class HD2_OT_ColorPick(Operator):
-    bl_idname = "hd2.particle_color_pick"
-    bl_label = "Pick Color"
-    bl_options = {"REGISTER", "UNDO"}
-
-    color: FloatVectorProperty(name="Color", size=3, subtype="COLOR")
-
-    def invoke(self, context, event):
-        settings = context.scene.Hd2ParticleModderSettings
-        if not settings.color_graphs:
-            self.report({"ERROR"}, "No color graph loaded")
-            return {"CANCELLED"}
-        idx = settings.color_graphs_index
-        if idx < 0 or idx >= len(settings.color_graphs):
-            self.report({"ERROR"}, "Invalid color graph selection")
-            return {"CANCELLED"}
-        graph = settings.color_graphs[idx]
-        if settings.color_point_index < 0 or settings.color_point_index >= len(graph.points):
-            self.report({"ERROR"}, "Invalid color point selection")
-            return {"CANCELLED"}
-        point = graph.points[settings.color_point_index]
-        self.color = point.color
-        return context.window_manager.invoke_props_dialog(self)
-
-    def execute(self, context):
-        settings = context.scene.Hd2ParticleModderSettings
-        graph = settings.color_graphs[settings.color_graphs_index]
-        indices = []
-        if settings.color_selected_indices:
-            try:
-                indices = [int(v) for v in settings.color_selected_indices.split(",") if v != ""]
-            except ValueError:
-                indices = [settings.color_point_index]
-        if not indices:
-            indices = [settings.color_point_index]
-        for idx in indices:
-            if idx < 0 or idx >= len(graph.points):
-                continue
-            point = graph.points[idx]
-            point.color = self.color
-            point.r = self.color[0] * 255.0
-            point.g = self.color[1] * 255.0
-            point.b = self.color[2] * 255.0
-        return {"FINISHED"}
 #endregion
 
 #region Operators: Color Selection
@@ -1216,11 +1228,92 @@ class HD2_OT_ColorSelectNone(Operator):
         return {"FINISHED"}
 #endregion
 
+#region Operators: Apply Color
+class HD2_OT_ColorApplySelected(Operator):
+    bl_idname = "hd2.particle_color_apply_selected"
+    bl_label = "Apply Color To Selected"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        settings = context.scene.Hd2ParticleModderSettings
+        if not settings.color_graphs:
+            return {"CANCELLED"}
+        selection_map = _selected_color_cells_map_from_cells(_parse_selected_cells_value(settings.selected_cells))
+        if not selection_map:
+            return {"CANCELLED"}
+        r = settings.color_apply[0] * 255.0
+        g = settings.color_apply[1] * 255.0
+        b = settings.color_apply[2] * 255.0
+        # Apply to current settings
+        for gidx, points in selection_map.items():
+            if gidx < 0 or gidx >= len(settings.color_graphs):
+                continue
+            graph = settings.color_graphs[gidx]
+            for pidx in points:
+                if pidx < 0 or pidx >= len(graph.points):
+                    continue
+                point = graph.points[pidx]
+                point.color = settings.color_apply
+                point.r = r
+                point.g = g
+                point.b = b
+        # Apply to all loaded cache entries
+        for key, entry in STATE.loaded_cache.items():
+            try:
+                if key == STATE.filepath:
+                    entry_cells = settings.selected_cells
+                else:
+                    entry_cells = entry.get("selected_cells", "")
+                entry_selection_map = _selected_color_cells_map_from_cells(
+                    _parse_selected_cells_value(entry_cells)
+                )
+                if not entry_selection_map:
+                    continue
+                data = bytearray(entry["data"])
+                header = _parse_header(data)
+                if header is None:
+                    continue
+                _apply_color_to_bytes(
+                    data,
+                    header["version"],
+                    header["num_variables"],
+                    header["num_systems"],
+                    entry_selection_map,
+                    (r, g, b),
+                )
+                entry["data"] = data
+            except Exception:
+                continue
+        return {"FINISHED"}
+#endregion
+
+#region Menus: Presets
+class HD2_MT_ColorSave(Menu):
+    bl_label = "Save"
+
+    def draw(self, context):
+        layout = self.layout
+        op = layout.operator("hd2.particle_color_preset_save", text="Save P1")
+        op.slot = 1
+        op = layout.operator("hd2.particle_color_preset_save", text="Save P2")
+        op.slot = 2
+
+
+class HD2_MT_ColorLoad(Menu):
+    bl_label = "Load"
+
+    def draw(self, context):
+        layout = self.layout
+        op = layout.operator("hd2.particle_color_preset_load", text="Load P1")
+        op.slot = 1
+        op = layout.operator("hd2.particle_color_preset_load", text="Load P2")
+        op.slot = 2
+#endregion
+
+
 #region Operators: Cell Selection/Edit
 def _parse_selected_cells(settings):
-    if not settings.selected_cells:
-        return []
-    return [s for s in settings.selected_cells.split("|") if s]
+    return _parse_selected_cells_value(settings.selected_cells)
 
 
 def _set_selected_cells(settings, cells):
@@ -1270,6 +1363,44 @@ class HD2_OT_CellSelect(Operator):
         settings.last_selected_cell = key
         return {"FINISHED"}
 
+
+#endregion
+
+#region Operators: Color Picker (HDR)
+class HD2_OT_ColorPick(Operator):
+    bl_idname = "hd2.particle_color_pick"
+    bl_label = "Pick Color"
+    bl_options = {"REGISTER", "UNDO"}
+
+    key: StringProperty()
+    color: FloatVectorProperty(name="Color", size=3, subtype="COLOR")
+
+    def invoke(self, context, event):
+        settings = context.scene.Hd2ParticleModderSettings
+        parts = self.key.split(":")
+        if len(parts) < 4:
+            return {"CANCELLED"}
+        gidx = int(parts[1])
+        pidx = int(parts[2])
+        graph = settings.color_graphs[gidx]
+        point = graph.points[pidx]
+        self.color = point.color
+        return context.window_manager.invoke_props_dialog(self)
+
+    def execute(self, context):
+        settings = context.scene.Hd2ParticleModderSettings
+        parts = self.key.split(":")
+        if len(parts) < 4:
+            return {"CANCELLED"}
+        gidx = int(parts[1])
+        pidx = int(parts[2])
+        graph = settings.color_graphs[gidx]
+        point = graph.points[pidx]
+        point.color = self.color
+        point.r = self.color[0] * 255.0
+        point.g = self.color[1] * 255.0
+        point.b = self.color[2] * 255.0
+        return {"FINISHED"}
 
 #endregion
 
@@ -1406,13 +1537,12 @@ class HD2_PT_ParticleModder(Panel):
             sub.label(text="10 keys")
             tool = box.row(align=True)
             tool.prop(settings, "show_time_color", text="Time")
-            tool.operator("hd2.particle_color_pick", text="Color Picker", icon="EYEDROPPER")
+            tool.prop(settings, "color_apply", text="")
+            tool.operator("hd2.particle_color_apply_selected", text="Apply")
             tool.operator("hd2.particle_color_select_all", text="All")
             tool.operator("hd2.particle_color_select_none", text="None")
-            tool.operator("hd2.particle_color_preset_save", text="Save P1").slot = 1
-            tool.operator("hd2.particle_color_preset_save", text="Save P2").slot = 2
-            tool.operator("hd2.particle_color_preset_load", text="Load P1").slot = 1
-            tool.operator("hd2.particle_color_preset_load", text="Load P2").slot = 2
+            tool.menu("HD2_MT_ColorSave", text="Save")
+            tool.menu("HD2_MT_ColorLoad", text="Load")
             if not settings.has_data:
                 box.label(text="Load a particle to edit color graphs.")
             header = box.row(align=True)
@@ -1555,9 +1685,13 @@ CLASSES = (
     HD2_OT_ColorPick,
     HD2_OT_ColorSelectAll,
     HD2_OT_ColorSelectNone,
+    HD2_OT_ColorApplySelected,
+    HD2_MT_ColorSave,
+    HD2_MT_ColorLoad,
     HD2_OT_GraphEditor,
     HD2_OT_LoadedParticleSelect,
     HD2_OT_CellSelect,
+    HD2_OT_ColorPick,
     HD2_OT_SetParticleTab,
     HD2_OT_ParticleModderLoad,
     HD2_OT_ParticleModderApply,
@@ -1579,6 +1713,9 @@ def load_from_bytes(context, data, label, file_id=0, type_id=0, is_archive=False
     settings = context.scene.Hd2ParticleModderSettings
     if cache_current:
         _cache_current(settings)
+    cached_entry = STATE.loaded_cache.get(label)
+    if cached_entry is not None:
+        data = bytearray(cached_entry["data"])
     header = _parse_header(data)
     if header is None:
         return False, "Unsupported or invalid particle file"
@@ -1597,6 +1734,14 @@ def load_from_bytes(context, data, label, file_id=0, type_id=0, is_archive=False
     settings.entry_file_id = str(file_id)
     settings.entry_type_id = str(type_id)
     settings.has_data = True
+
+    cached = STATE.loaded_cache.get(label)
+    if cached is not None:
+        settings.selected_cells = cached.get("selected_cells", "")
+        settings.last_selected_cell = cached.get("last_selected_cell", "")
+    else:
+        settings.selected_cells = ""
+        settings.last_selected_cell = ""
 
     found = None
     for item in settings.loaded_particles:
@@ -1730,11 +1875,9 @@ def load_from_bytes(context, data, label, file_id=0, type_id=0, is_archive=False
     return True, ""
 
 
-def apply_settings_to_state(context):
-    settings = context.scene.Hd2ParticleModderSettings
+def _apply_settings_to_state_data(settings):
     if not settings.has_data or STATE.data is None:
         return False, "No particle data loaded"
-    _cache_current(settings)
     if settings.graphs and STATE.graph_curve is not None:
         idx = settings.graphs_index
         if 0 <= idx < len(settings.graphs):
@@ -1838,6 +1981,15 @@ def apply_settings_to_state(context):
             except (ValueError, TypeError):
                 material_id = 0
             struct.pack_into("<Q", STATE.data, vis.offset + 4, material_id)
+    return True, ""
+
+
+def apply_settings_to_state(context):
+    settings = context.scene.Hd2ParticleModderSettings
+    ok, err = _apply_settings_to_state_data(settings)
+    if not ok:
+        return False, err
+    _cache_current(settings, flush=False)
     return True, ""
 #endregion
 
