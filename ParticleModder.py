@@ -1209,11 +1209,12 @@ class HD2_OT_ColorSelectAll(Operator):
         settings = context.scene.Hd2ParticleModderSettings
         if not settings.color_graphs:
             return {"CANCELLED"}
-        idx = settings.color_graphs_index
-        if idx < 0 or idx >= len(settings.color_graphs):
-            return {"CANCELLED"}
-        graph = settings.color_graphs[idx]
-        settings.color_selected_indices = ",".join(str(i) for i in range(len(graph.points)))
+        cells = []
+        for gidx, graph in enumerate(settings.color_graphs):
+            for pidx in range(len(graph.points)):
+                cells.append(f"color:{gidx}:{pidx}:color")
+                cells.append(f"color:{gidx}:{pidx}:time")
+        _set_selected_cells(settings, cells)
         return {"FINISHED"}
 
 
@@ -1224,7 +1225,7 @@ class HD2_OT_ColorSelectNone(Operator):
 
     def execute(self, context):
         settings = context.scene.Hd2ParticleModderSettings
-        settings.color_selected_indices = ""
+        settings.selected_cells = ""
         return {"FINISHED"}
 #endregion
 
@@ -1331,6 +1332,7 @@ class HD2_OT_CellSelect(Operator):
     def invoke(self, context, event):
         self._shift = event.shift
         self._ctrl = event.ctrl
+        self._alt = event.alt
         return self.execute(context)
 
     def execute(self, context):
@@ -1338,15 +1340,27 @@ class HD2_OT_CellSelect(Operator):
         cells = _parse_selected_cells(settings)
         key = self.key
         if self._shift and settings.last_selected_cell:
-            # range select only within same group/graph/field
+            # range select within same group (rectangle across graph index + point index)
             try:
                 g1, gi1, pi1, f1 = settings.last_selected_cell.split(":")
                 g2, gi2, pi2, f2 = key.split(":")
-                if g1 == g2 and gi1 == gi2 and f1 == f2:
-                    start = min(int(pi1), int(pi2))
-                    end = max(int(pi1), int(pi2))
-                    for i in range(start, end + 1):
-                        cells.append(f"{g1}:{gi1}:{i}:{f1}")
+                if g1 == g2:
+                    gi_start = min(int(gi1), int(gi2))
+                    gi_end = max(int(gi1), int(gi2))
+                    pi_start = min(int(pi1), int(pi2))
+                    pi_end = max(int(pi1), int(pi2))
+                    if g1 == "color":
+                        fields = [f1] if f1 == f2 else ["time", "color"]
+                    else:
+                        fields = [f1] if f1 == f2 else ["time", "value"]
+                    for gi in range(gi_start, gi_end + 1):
+                        for pi in range(pi_start, pi_end + 1):
+                            for field in fields:
+                                cells.append(f"{g1}:{gi}:{pi}:{field}")
+                    _set_selected_cells(settings, cells)
+                    if not self._alt:
+                        settings.last_selected_cell = key
+                    return {"FINISHED"}
                 else:
                     cells.append(key)
             except Exception:
@@ -1357,10 +1371,13 @@ class HD2_OT_CellSelect(Operator):
             else:
                 cells.append(key)
         else:
-            if key not in cells:
+            if key in cells:
+                cells = [c for c in cells if c != key]
+            else:
                 cells.append(key)
         _set_selected_cells(settings, cells)
-        settings.last_selected_cell = key
+        if not self._alt:
+            settings.last_selected_cell = key
         return {"FINISHED"}
 
 
