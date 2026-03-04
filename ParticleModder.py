@@ -9,6 +9,7 @@ import json
 import gpu
 from gpu_extras.batch import batch_for_shader
 import blf
+from mathutils import Matrix, Euler
 from .utils.constants import ParticleID
 import bpy
 from bpy.props import (
@@ -349,6 +350,64 @@ def _scan_graphs(data: bytearray, version: int, num_variables: int, num_systems:
         info.from_memory_stream(stream)
         infos.append(info)
     return infos
+
+
+class _SystemTransformInfo:
+    def __init__(self):
+        self.system_index = 0
+        self.rotation_offset = 0
+        self.position_offset = 0
+        self.rotation_euler = (0.0, 0.0, 0.0)
+        self.position = (0.0, 0.0, 0.0)
+
+
+def _scan_transforms(data: bytearray, version: int, num_variables: int, num_systems: int):
+    stream = _PMStream(data)
+    start = _variables_offset(version) + (num_variables * 4) + (num_variables * 12)
+    stream.seek(start)
+    transforms = []
+
+    def _find_offsets_rel(base):
+        def _u32(rel):
+            return struct.unpack_from("<I", data, base + rel)[0]
+
+        for rel in range(0xC8, 0x140, 4):
+            try:
+                c = _u32(rel)
+                e = _u32(rel + 8)
+                v = _u32(rel + 16)
+                s = _u32(rel + 20)
+            except Exception:
+                continue
+            if (0 < c < e <= v <= s) and (s < 0x02000000):
+                return rel, s
+        return None, None
+
+    for system_index in range(num_systems):
+        base = stream.tell()
+        rel, size = _find_offsets_rel(base)
+        if rel is None or size is None:
+            break
+
+        t = _SystemTransformInfo()
+        t.system_index = system_index
+        t.rotation_offset = base + (rel - 0x70)
+        t.position_offset = base + (rel - 0x40)
+        try:
+            m0 = struct.unpack_from("<fff", data, t.rotation_offset + 0)
+            m1 = struct.unpack_from("<fff", data, t.rotation_offset + 16)
+            m2 = struct.unpack_from("<fff", data, t.rotation_offset + 32)
+            t.rotation_euler = tuple(Matrix((m0, m1, m2)).to_euler("XYZ"))
+        except Exception:
+            t.rotation_euler = (0.0, 0.0, 0.0)
+        try:
+            t.position = struct.unpack_from("<fff", data, t.position_offset)
+        except Exception:
+            t.position = (0.0, 0.0, 0.0)
+        transforms.append(t)
+        stream.seek(base + size)
+
+    return transforms
 
 
 class _EmitterInfo:
@@ -760,12 +819,13 @@ class HD2_UL_ColorGraphs(UIList):
                 selected = key in _parse_selected_cells(data)
                 op = split_t.operator("hd2.particle_cell_select", text="", depress=selected, icon="CHECKBOX_HLT" if selected else "CHECKBOX_DEHLT")
                 op.key = key
-            split = col.split(factor=0.65, align=True)
-            split.prop(point, "color", text="")
-            keyc = f"color:{index}:{i}:color"
-            selectedc = keyc in _parse_selected_cells(data)
-            opc = split.operator("hd2.particle_cell_select", text="", depress=selectedc, icon="CHECKBOX_HLT" if selectedc else "CHECKBOX_DEHLT")
-            opc.key = keyc
+            if getattr(data, "show_color_color", True):
+                split = col.split(factor=0.65, align=True)
+                split.prop(point, "color", text="")
+                keyc = f"color:{index}:{i}:color"
+                selectedc = keyc in _parse_selected_cells(data)
+                opc = split.operator("hd2.particle_cell_select", text="", depress=selectedc, icon="CHECKBOX_HLT" if selectedc else "CHECKBOX_DEHLT")
+                opc.key = keyc
 
 
 class _HD2_UL_GraphsBase(UIList):
@@ -777,10 +837,13 @@ class _HD2_UL_GraphsBase(UIList):
         for i, point in enumerate(item.points):
             col = row.column(align=True)
             show_time = True
+            show_value = True
             if self.graph_kind == "OPACITY":
                 show_time = getattr(data, "show_time_opacity", True)
+                show_value = getattr(data, "show_value_opacity", True)
             elif self.graph_kind == "SCALE":
                 show_time = getattr(data, "show_time_intensity", True)
+                show_value = getattr(data, "show_value_intensity", True)
             if show_time:
                 split_t = col.split(factor=0.65, align=True)
                 split_t.prop(point, "x", text="")
@@ -788,12 +851,13 @@ class _HD2_UL_GraphsBase(UIList):
                 selected = key in _parse_selected_cells(data)
                 op = split_t.operator("hd2.particle_cell_select", text="", depress=selected, icon="CHECKBOX_HLT" if selected else "CHECKBOX_DEHLT")
                 op.key = key
-            split_v = col.split(factor=0.65, align=True)
-            split_v.prop(point, "y", text="")
-            keyv = f"graph:{index}:{i}:value"
-            selectedv = keyv in _parse_selected_cells(data)
-            opv = split_v.operator("hd2.particle_cell_select", text="", depress=selectedv, icon="CHECKBOX_HLT" if selectedv else "CHECKBOX_DEHLT")
-            opv.key = keyv
+            if show_value:
+                split_v = col.split(factor=0.65, align=True)
+                split_v.prop(point, "y", text="")
+                keyv = f"graph:{index}:{i}:value"
+                selectedv = keyv in _parse_selected_cells(data)
+                opv = split_v.operator("hd2.particle_cell_select", text="", depress=selectedv, icon="CHECKBOX_HLT" if selectedv else "CHECKBOX_DEHLT")
+                opv.key = keyv
 
     def filter_items(self, context, data, propname):
         items = getattr(data, propname)
@@ -848,6 +912,25 @@ class Hd2EmitterItem(PropertyGroup):
 
 
 class HD2_UL_Emitters(UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        layout.label(text=item.label)
+#endregion
+
+#region Transforms
+class Hd2SystemTransformItem(PropertyGroup):
+    label: StringProperty(name="Label", default="")
+    system_index: IntProperty(name="System", default=0)
+    rotation_offset: IntProperty(name="Rotation Offset", default=0)
+    position_offset: IntProperty(name="Position Offset", default=0)
+    rot_x: FloatProperty(name="Rot X", default=0.0, subtype="ANGLE")
+    rot_y: FloatProperty(name="Rot Y", default=0.0, subtype="ANGLE")
+    rot_z: FloatProperty(name="Rot Z", default=0.0, subtype="ANGLE")
+    pos_x: FloatProperty(name="Pos X", default=0.0)
+    pos_y: FloatProperty(name="Pos Y", default=0.0)
+    pos_z: FloatProperty(name="Pos Z", default=0.0)
+
+
+class HD2_UL_SystemTransforms(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         layout.label(text=item.label)
 #endregion
@@ -924,6 +1007,8 @@ class Hd2ParticleModderSettings(PropertyGroup):
     color_apply: FloatVectorProperty(name="Color", size=3, subtype="COLOR", default=(1.0, 1.0, 1.0), min=0.0, max=1.0, soft_min=0.0, soft_max=1.0)
     emitters: CollectionProperty(type=Hd2EmitterItem)
     emitters_index: IntProperty(name="Emitter Index", default=0)
+    transforms: CollectionProperty(type=Hd2SystemTransformItem)
+    transforms_index: IntProperty(name="Transform Index", default=0)
     visualizers: CollectionProperty(type=Hd2VisualizerItem)
     visualizers_index: IntProperty(name="Visualizer Index", default=0)
     loaded_particles: CollectionProperty(type=Hd2LoadedParticleItem)
@@ -937,13 +1022,17 @@ class Hd2ParticleModderSettings(PropertyGroup):
             ("LIFETIME", "Lifetime", ""),
             ("VISUALIZERS", "Visualizers", ""),
             ("EMITTERS", "Emitters", ""),
+            ("TRANSFORMS", "Transforms", ""),
             ("PARTICLES", "Particles", ""),
         ],
         default="COLOR",
     )
     show_time_color: BoolProperty(name="Show Time (Color)", default=True)
+    show_color_color: BoolProperty(name="Show Color (Color)", default=True)
     show_time_opacity: BoolProperty(name="Show Time (Opacity)", default=True)
+    show_value_opacity: BoolProperty(name="Show Opacity (Opacity)", default=True)
     show_time_intensity: BoolProperty(name="Show Time (Intensity)", default=True)
+    show_value_intensity: BoolProperty(name="Show Size (Intensity)", default=True)
     color_preset_1: StringProperty(name="Color Preset 1", default="")
     color_preset_2: StringProperty(name="Color Preset 2", default="")
 #endregion
@@ -1542,8 +1631,17 @@ class HD2_PT_ParticleModder(Panel):
 
         # Custom tab row (hide legacy PARTICLES)
         tabs = col.row(align=True)
-        for tab in ("COLOR", "OPACITY", "INTENSITY", "LIFETIME", "VISUALIZERS", "EMITTERS"):
-            op = tabs.operator("hd2.particle_tab_set", text=tab.title(), depress=(settings.ui_tab == tab))
+        tab_labels = {
+            "COLOR": "Color",
+            "OPACITY": "Opacity",
+            "INTENSITY": "Intensity",
+            "LIFETIME": "Lifetime",
+            "VISUALIZERS": "Visualizers",
+            "EMITTERS": "Emitters",
+            "TRANSFORMS": "Transforms",
+        }
+        for tab in ("COLOR", "OPACITY", "INTENSITY", "LIFETIME", "VISUALIZERS", "EMITTERS", "TRANSFORMS"):
+            op = tabs.operator("hd2.particle_tab_set", text=tab_labels.get(tab, tab.title()), depress=(settings.ui_tab == tab))
             op.tab = tab
 
         if settings.ui_tab == "COLOR":
@@ -1554,6 +1652,7 @@ class HD2_PT_ParticleModder(Panel):
             sub.label(text="10 keys")
             tool = box.row(align=True)
             tool.prop(settings, "show_time_color", text="Time")
+            tool.prop(settings, "show_color_color", text="Color")
             tool.prop(settings, "color_apply", text="")
             tool.operator("hd2.particle_color_apply_selected", text="Apply")
             tool.operator("hd2.particle_color_select_all", text="All")
@@ -1565,9 +1664,10 @@ class HD2_PT_ParticleModder(Panel):
             header = box.row(align=True)
             header.label(text="")
             for i in range(1, 11):
-                if settings.show_time_color:
-                    header.label(text="")
-                header.label(text=f"C{i}")
+                if settings.show_time_color and not settings.show_color_color:
+                    header.label(text=f"Time {i}")
+                if settings.show_color_color:
+                    header.label(text=f"Color {i}")
             box.template_list("HD2_UL_ColorGraphs", "", settings, "color_graphs", settings, "color_graphs_index", rows=8)
 
         elif settings.ui_tab == "OPACITY":
@@ -1578,15 +1678,17 @@ class HD2_PT_ParticleModder(Panel):
             sub.label(text="10 keys")
             tool = box.row(align=True)
             tool.prop(settings, "show_time_opacity", text="Time")
+            tool.prop(settings, "show_value_opacity", text="Opacity")
             tool.operator("hd2.particle_graph_editor", text="Open Graph")
             if not settings.has_data:
                 box.label(text="Load a particle to edit opacity graphs.")
             header = box.row(align=True)
             header.label(text="")
             for i in range(1, 11):
-                if settings.show_time_opacity:
-                    header.label(text="")
-                header.label(text=f"O{i}")
+                if settings.show_time_opacity and not settings.show_value_opacity:
+                    header.label(text=f"Time {i}")
+                if settings.show_value_opacity:
+                    header.label(text=f"Opacity {i}")
             box.template_list("HD2_UL_OpacityGraphs", "", settings, "graphs", settings, "graphs_index", rows=8)
 
         elif settings.ui_tab == "INTENSITY":
@@ -1597,15 +1699,17 @@ class HD2_PT_ParticleModder(Panel):
             sub.label(text="10 keys")
             tool = box.row(align=True)
             tool.prop(settings, "show_time_intensity", text="Time")
+            tool.prop(settings, "show_value_intensity", text="Size")
             tool.operator("hd2.particle_graph_editor", text="Open Graph")
             if not settings.has_data:
                 box.label(text="Load a particle to edit intensity graphs.")
             header = box.row(align=True)
             header.label(text="")
             for i in range(1, 11):
-                if settings.show_time_intensity:
-                    header.label(text="")
-                header.label(text=f"I{i}")
+                if settings.show_time_intensity and not settings.show_value_intensity:
+                    header.label(text=f"Time {i}")
+                if settings.show_value_intensity:
+                    header.label(text=f"Size {i}")
             box.template_list("HD2_UL_ScaleGraphs", "", settings, "graphs", settings, "graphs_index", rows=8)
 
         elif settings.ui_tab == "LIFETIME":
@@ -1673,6 +1777,24 @@ class HD2_PT_ParticleModder(Panel):
                         r.prop(point, "time", text="Time")
                         r.prop(point, "num_a", text="A")
                         r.prop(point, "num_b", text="B")
+        elif settings.ui_tab == "TRANSFORMS":
+            box = col.box()
+            sub = box.row(align=True)
+            sub.label(text="Emitter Offset / Rotation", icon="ORIENTATION_GIMBAL")
+            row = box.row()
+            row.template_list("HD2_UL_SystemTransforms", "", settings, "transforms", settings, "transforms_index", rows=6)
+            if settings.transforms and 0 <= settings.transforms_index < len(settings.transforms):
+                t = settings.transforms[settings.transforms_index]
+                box.label(text=f"System: {t.system_index}")
+                box.label(text=f"Offsets R:{t.rotation_offset} P:{t.position_offset}")
+                r = box.row(align=True)
+                r.prop(t, "pos_x", text="Pos X")
+                r.prop(t, "pos_y", text="Pos Y")
+                r.prop(t, "pos_z", text="Pos Z")
+                r = box.row(align=True)
+                r.prop(t, "rot_x", text="Rot X")
+                r.prop(t, "rot_y", text="Rot Y")
+                r.prop(t, "rot_z", text="Rot Z")
 #endregion
 
 CLASSES = (
@@ -1691,6 +1813,8 @@ CLASSES = (
     Hd2EmitterBurstPoint,
     Hd2EmitterItem,
     HD2_UL_Emitters,
+    Hd2SystemTransformItem,
+    HD2_UL_SystemTransforms,
     Hd2VisualizerItem,
     HD2_UL_Visualizers,
     Hd2LoadedParticleItem,
@@ -1842,6 +1966,22 @@ def load_from_bytes(context, data, label, file_id=0, type_id=0, is_archive=False
     settings.graphs_index = 0 if len(settings.graphs) > 0 else 0
     settings.color_graphs_index = 0 if len(settings.color_graphs) > 0 else 0
 
+    settings.transforms.clear()
+    transform_infos = _scan_transforms(data, header["version"], header["num_variables"], header["num_systems"])
+    for info in transform_infos:
+        item = settings.transforms.add()
+        item.label = f"S{info.system_index}"
+        item.system_index = info.system_index
+        item.rotation_offset = int(info.rotation_offset)
+        item.position_offset = int(info.position_offset)
+        item.rot_x = float(info.rotation_euler[0])
+        item.rot_y = float(info.rotation_euler[1])
+        item.rot_z = float(info.rotation_euler[2])
+        item.pos_x = float(info.position[0])
+        item.pos_y = float(info.position[1])
+        item.pos_z = float(info.position[2])
+    settings.transforms_index = 0 if len(settings.transforms) > 0 else 0
+
     settings.emitters.clear()
     emitters = _scan_emitters(data, graph_infos)
     for idx, e in enumerate(emitters):
@@ -1927,6 +2067,24 @@ def _apply_settings_to_state_data(settings):
                 float(graph.points[i].r),
                 float(graph.points[i].g),
                 float(graph.points[i].b),
+            )
+    for transform in settings.transforms:
+        if transform.rotation_offset > 0:
+            matrix = Euler((transform.rot_x, transform.rot_y, transform.rot_z), "XYZ").to_matrix()
+            row0 = matrix[0]
+            row1 = matrix[1]
+            row2 = matrix[2]
+            struct.pack_into("<fff", STATE.data, transform.rotation_offset + 0, float(row0[0]), float(row0[1]), float(row0[2]))
+            struct.pack_into("<fff", STATE.data, transform.rotation_offset + 16, float(row1[0]), float(row1[1]), float(row1[2]))
+            struct.pack_into("<fff", STATE.data, transform.rotation_offset + 32, float(row2[0]), float(row2[1]), float(row2[2]))
+        if transform.position_offset > 0:
+            struct.pack_into(
+                "<fff",
+                STATE.data,
+                transform.position_offset,
+                float(transform.pos_x),
+                float(transform.pos_y),
+                float(transform.pos_z),
             )
     for emitter in settings.emitters:
         if emitter.offset <= 0:
