@@ -3747,6 +3747,7 @@ class SaveStingrayAnimationOperator(Operator):
 #endregion
 
 #region Operators: Particles
+#region Operators: Particle_modder
 class ParticleModderEditEntryOperator(Operator):
     bl_label  = "Edit Particle"
     bl_idname = "helldiver2.particle_modder_edit"
@@ -3824,6 +3825,8 @@ class ParticleModderApplyEntryOperator(Operator):
         entry.SetData(bytearray(particle_modder_m.STATE.data), bytearray(entry.GpuData), bytearray(entry.StreamData), True)
         self.report({'INFO'}, f"Applied edits to particle {entry.FileID}")
         return {'FINISHED'}
+
+#endregion
 
 class SaveStingrayParticleOperator(Operator):
     bl_label  = "Save Particle"
