@@ -3794,7 +3794,7 @@ class ParticleModderApplyEntryOperator(Operator):
             self.report({'ERROR'}, "No archive particle loaded")
             return {'CANCELLED'}
 
-        ok, err = particle_modder_m.apply_settings_to_state(context)
+        ok, err = particle_modder_m.apply_settings_to_state(context, upgrade_to_current=False)
         if not ok:
             self.report({'ERROR'}, err)
             return {'CANCELLED'}
