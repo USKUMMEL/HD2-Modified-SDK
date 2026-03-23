@@ -1156,6 +1156,17 @@ def _build_flat_graph_offset_maps(graph_infos):
     return graph_offsets, color_offsets
 
 
+def _draw_visibility_controls(layout, settings, items):
+    box = layout.box()
+    header = box.row(align=True)
+    header.label(text="Visible Columns", icon="HIDE_OFF")
+    toggles = box.row(align=True)
+    toggles.scale_y = 1.05
+    for prop_name, label, icon in items:
+        toggles.prop(settings, prop_name, text=label, toggle=True, icon=icon)
+    return box
+
+
 def _apply_color_to_bytes(data: bytearray, version: int, num_variables: int, num_systems: int, selection_map, color_rgb):
     graph_infos = _scan_graphs(data, version, num_variables, num_systems)
     data_len = len(data)
@@ -2631,15 +2642,27 @@ class HD2_PT_ParticleModder(Panel):
             sub.label(text="Color", icon="COLOR")
             sub.separator()
             sub.label(text="10 keys")
-            tool = box.row(align=True)
-            tool.prop(settings, "show_time_color", text="Time")
-            tool.prop(settings, "show_color_color", text="Color")
-            tool.prop(settings, "color_apply", text="")
-            tool.operator("hd2.particle_color_apply_selected", text="Apply Color")
-            tool.prop(settings, "number_apply", text="")
-            tool.operator("hd2.particle_number_apply_selected", text="Apply Num")
-            tool.operator("hd2.particle_color_select_all", text="All")
-            tool.operator("hd2.particle_color_select_none", text="None")
+            _draw_visibility_controls(
+                box,
+                settings,
+                [
+                    ("show_time_color", "Time", "TIME"),
+                    ("show_color_color", "Color", "COLOR"),
+                ],
+            )
+
+            apply_row = box.row(align=True)
+            color_group = apply_row.row(align=True)
+            color_group.prop(settings, "color_apply", text="Color")
+            color_group.operator("hd2.particle_color_apply_selected", text="Apply Color", icon="BRUSH_DATA")
+            number_group = apply_row.row(align=True)
+            number_group.prop(settings, "number_apply", text="Number")
+            number_group.operator("hd2.particle_number_apply_selected", text="Apply Number", icon="DRIVER")
+
+            select_row = box.row(align=True)
+            select_row.label(text="Selection")
+            select_row.operator("hd2.particle_color_select_all", text="Select All", icon="CHECKBOX_HLT")
+            select_row.operator("hd2.particle_color_select_none", text="Clear", icon="CHECKBOX_DEHLT")
             if not settings.has_data:
                 box.label(text="Load a particle to edit color graphs.")
             header = box.row(align=True)
@@ -2657,11 +2680,17 @@ class HD2_PT_ParticleModder(Panel):
             sub.label(text="Opacity", icon="MOD_OPACITY")
             sub.separator()
             sub.label(text="10 keys")
+            _draw_visibility_controls(
+                box,
+                settings,
+                [
+                    ("show_time_opacity", "Time", "TIME"),
+                    ("show_value_opacity", "Opacity", "MOD_OPACITY"),
+                ],
+            )
             tool = box.row(align=True)
-            tool.prop(settings, "show_time_opacity", text="Time")
-            tool.prop(settings, "show_value_opacity", text="Opacity")
-            tool.prop(settings, "number_apply", text="")
-            tool.operator("hd2.particle_number_apply_selected", text="Apply Num")
+            tool.prop(settings, "number_apply", text="Number")
+            tool.operator("hd2.particle_number_apply_selected", text="Apply Number", icon="DRIVER")
             tool.operator("hd2.particle_graph_editor", text="Open Graph")
             if not settings.has_data:
                 box.label(text="Load a particle to edit opacity graphs.")
@@ -2680,11 +2709,17 @@ class HD2_PT_ParticleModder(Panel):
             sub.label(text="Intensity", icon="LIGHT")
             sub.separator()
             sub.label(text="10 keys")
+            _draw_visibility_controls(
+                box,
+                settings,
+                [
+                    ("show_time_intensity", "Time", "TIME"),
+                    ("show_value_intensity", "Size", "LIGHT"),
+                ],
+            )
             tool = box.row(align=True)
-            tool.prop(settings, "show_time_intensity", text="Time")
-            tool.prop(settings, "show_value_intensity", text="Size")
-            tool.prop(settings, "number_apply", text="")
-            tool.operator("hd2.particle_number_apply_selected", text="Apply Num")
+            tool.prop(settings, "number_apply", text="Number")
+            tool.operator("hd2.particle_number_apply_selected", text="Apply Number", icon="DRIVER")
             tool.operator("hd2.particle_graph_editor", text="Open Graph")
             if not settings.has_data:
                 box.label(text="Load a particle to edit intensity graphs.")
