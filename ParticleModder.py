@@ -149,9 +149,9 @@ _VIS_MESH = 2
 _VIS_UNKNOWN3 = 3
 _VIS_UNKNOWN4 = 4
 
-# Latest upstream modder no longer parses/writes emitter blocks with heuristics.
-# Rewriting them here is unsafe and can corrupt particle binaries.
-_ENABLE_EXPERIMENTAL_EMITTER_WRITES = False
+# Emitter payload edits are supported for the current block topology.
+# Changing emitter types or block layout is still unsafe.
+_ENABLE_EXPERIMENTAL_EMITTER_WRITES = True
 
 
 class _PMStream:
@@ -232,6 +232,63 @@ class ColorGraph:
         stream.write(struct.pack("<10f", *self.x))
         for color in self.y:
             stream.write(struct.pack("<fff", *color))
+
+
+class BurstEmitterGraph:
+    def __init__(self):
+        self.times = []
+        self.num_particles = []
+
+    def from_memory_stream(self, stream: _PMStream):
+        self.times = []
+        self.num_particles = []
+        for _ in range(_BURST_POINTS):
+            self.times.append(stream.float32_read())
+            self.num_particles.append((stream.uint32_read(), stream.uint32_read()))
+
+    def write_to_memory_stream(self, stream: _PMStream):
+        for i in range(_BURST_POINTS):
+            time_value = self.times[i] if i < len(self.times) else 0.0
+            if i < len(self.num_particles):
+                num_a, num_b = self.num_particles[i]
+            else:
+                num_a, num_b = 0, 0
+            stream.write(struct.pack("<fII", float(time_value), int(num_a), int(num_b)))
+
+
+class Emitter:
+    BURST = _EMITTER_BURST
+    RATE = _EMITTER_RATE
+
+    def __init__(self):
+        self.emitter_type = 0
+        self.initial_rate_min = 0.0
+        self.initial_rate_max = 0.0
+        self.rate_graph = Graph()
+        self.burst_graph = BurstEmitterGraph()
+
+    def from_memory_stream(self, stream: _PMStream):
+        self.emitter_type = stream.uint32_read()
+        if self.emitter_type == Emitter.BURST:
+            self.burst_graph = BurstEmitterGraph()
+            self.burst_graph.from_memory_stream(stream)
+        elif self.emitter_type == Emitter.RATE:
+            self.initial_rate_min = stream.float32_read()
+            self.initial_rate_max = stream.float32_read()
+            self.rate_graph = Graph()
+            self.rate_graph.from_memory_stream(stream)
+        else:
+            raise ValueError(f"Unsupported emitter type: {self.emitter_type}")
+
+    def write_to_memory_stream(self, stream: _PMStream):
+        stream.write(struct.pack("<I", int(self.emitter_type)))
+        if self.emitter_type == Emitter.BURST:
+            self.burst_graph.write_to_memory_stream(stream)
+        elif self.emitter_type == Emitter.RATE:
+            stream.write(struct.pack("<ff", float(self.initial_rate_min), float(self.initial_rate_max)))
+            self.rate_graph.write_to_memory_stream(stream)
+        else:
+            raise ValueError(f"Unsupported emitter type: {self.emitter_type}")
 
 
 class Visualizer:
@@ -404,6 +461,9 @@ class _ParticleSystemModel:
         self.component_chunk = bytearray(stream.read(self.emitter_offset - self.component_list_offset))
         stream.seek(self.offset + self.emitter_offset)
         self.emitter_chunk = bytearray(stream.read(self.visualizer_offset - self.emitter_offset))
+        for rel_offset, emitter in _scan_emitter_models(self.emitter_chunk):
+            self.emitters.append(emitter)
+            self.emitter_offsets.append(int(self.emitter_offset + rel_offset))
 
         if not self.is_rendering():
             stream.seek(self.offset + self.size)
@@ -530,7 +590,7 @@ class _ParticleSystemModel:
             return
 
         for index, offset in enumerate(self.emitter_offsets):
-            stream.seek(offset)
+            stream.seek(self.offset + offset)
             self.emitters[index].write_to_memory_stream(stream)
 
         stream.seek(self.offset + self.visualizer_offset)
@@ -717,6 +777,47 @@ def _pack_color_graph_from_settings(item):
         else:
             payload += struct.pack("<fff", 0.0, 0.0, 0.0)
     return bytes(payload)
+
+
+def _pack_emitter_from_settings(item):
+    if item.emitter_type == "RATE":
+        xs = [float(item.rate_points[i].x) if i < len(item.rate_points) else 0.0 for i in range(_GRAPH_POINTS)]
+        ys = [float(item.rate_points[i].y) if i < len(item.rate_points) else 0.0 for i in range(_GRAPH_POINTS)]
+        return (
+            struct.pack("<Iff", _EMITTER_RATE, float(item.initial_rate_min), float(item.initial_rate_max)) +
+            struct.pack("<10f", *xs) +
+            struct.pack("<10f", *ys)
+        )
+    if item.emitter_type == "BURST":
+        payload = bytearray(struct.pack("<I", _EMITTER_BURST))
+        for i in range(_BURST_POINTS):
+            if i < len(item.burst_points):
+                point = item.burst_points[i]
+                payload += struct.pack("<fII", float(point.time), int(point.num_a), int(point.num_b))
+            else:
+                payload += struct.pack("<fII", 0.0, 0, 0)
+        return bytes(payload)
+    raise ValueError(f"Unsupported emitter type: {item.emitter_type}")
+
+
+def _apply_settings_emitter_to_model(item, emitter):
+    expected_type = "RATE" if emitter.emitter_type == Emitter.RATE else "BURST"
+    if item.emitter_type != expected_type:
+        raise ValueError("Changing emitter type is not supported")
+    if emitter.emitter_type == Emitter.RATE:
+        emitter.initial_rate_min = float(item.initial_rate_min)
+        emitter.initial_rate_max = float(item.initial_rate_max)
+        emitter.rate_graph.x = [float(item.rate_points[i].x) if i < len(item.rate_points) else 0.0 for i in range(_GRAPH_POINTS)]
+        emitter.rate_graph.y = [float(item.rate_points[i].y) if i < len(item.rate_points) else 0.0 for i in range(_GRAPH_POINTS)]
+        return
+    emitter.burst_graph.times = [float(item.burst_points[i].time) if i < len(item.burst_points) else 0.0 for i in range(_BURST_POINTS)]
+    emitter.burst_graph.num_particles = [
+        (
+            int(item.burst_points[i].num_a) if i < len(item.burst_points) else 0,
+            int(item.burst_points[i].num_b) if i < len(item.burst_points) else 0,
+        )
+        for i in range(_BURST_POINTS)
+    ]
 
 
 def _write_bytes_at(data: bytearray, offset: int, payload: bytes):
@@ -1009,6 +1110,30 @@ class _EmitterInfo:
         self.burst_times = []
         self.burst_num_a = []
         self.burst_num_b = []
+
+
+def _scan_emitter_models(emitter_chunk: bytearray):
+    emitters = []
+    pos = 0
+    chunk_len = len(emitter_chunk)
+    while pos + 4 <= chunk_len:
+        emitter_type = struct.unpack_from("<I", emitter_chunk, pos)[0]
+        if emitter_type == _EMITTER_BURST and pos + 4 + (_BURST_POINTS * 12) <= chunk_len:
+            stream = _PMStream(bytearray(emitter_chunk[pos:pos + 4 + (_BURST_POINTS * 12)]))
+            emitter = Emitter()
+            emitter.from_memory_stream(stream)
+            emitters.append((pos, emitter))
+            pos += 4 + (_BURST_POINTS * 12)
+            continue
+        if emitter_type == _EMITTER_RATE and pos + 4 + 8 + _GRAPH_BYTES <= chunk_len:
+            stream = _PMStream(bytearray(emitter_chunk[pos:pos + 4 + 8 + _GRAPH_BYTES]))
+            emitter = Emitter()
+            emitter.from_memory_stream(stream)
+            emitters.append((pos, emitter))
+            pos += 4 + 8 + _GRAPH_BYTES
+            continue
+        pos += 4
+    return emitters
 
 
 def _scan_emitters(data: bytearray, graph_infos):
@@ -2782,7 +2907,7 @@ class HD2_PT_ParticleModder(Panel):
             row.template_list("HD2_UL_Emitters", "", settings, "emitters", settings, "emitters_index", rows=6)
             if settings.emitters and 0 <= settings.emitters_index < len(settings.emitters):
                 emitter = settings.emitters[settings.emitters_index]
-                box.prop(emitter, "emitter_type")
+                box.label(text=f"Type: {emitter.emitter_type}")
                 box.label(text=f"System: {emitter.system_index}")
                 if emitter.emitter_type == "RATE":
                     box.prop(emitter, "initial_rate_min")
@@ -2797,6 +2922,8 @@ class HD2_PT_ParticleModder(Panel):
                         r.prop(point, "time", text="Time")
                         r.prop(point, "num_a", text="A")
                         r.prop(point, "num_b", text="B")
+            else:
+                box.label(text="No emitters detected for this particle.")
         elif settings.ui_tab == "TRANSFORMS":
             box = col.box()
             sub = box.row(align=True)
@@ -3058,6 +3185,28 @@ def load_from_bytes(context, data, label, file_id=0, type_id=0, is_archive=False
         transform.pos_y = float(system.position.position[1])
         transform.pos_z = float(system.position.position[2])
 
+        for i, emitter in enumerate(system.emitters):
+            item = settings.emitters.add()
+            item.label = f"E{len(settings.emitters)-1} S{system_index}"
+            item.system_index = system_index
+            emitter_offset = system.emitter_offsets[i] if i < len(system.emitter_offsets) else system.emitter_offset
+            item.offset = int(system.offset + emitter_offset)
+            item.emitter_type = "RATE" if emitter.emitter_type == Emitter.RATE else "BURST"
+            if emitter.emitter_type == Emitter.RATE:
+                item.initial_rate_min = float(emitter.initial_rate_min)
+                item.initial_rate_max = float(emitter.initial_rate_max)
+                for p in range(_GRAPH_POINTS):
+                    pt = item.rate_points.add()
+                    pt.x = float(emitter.rate_graph.x[p]) if p < len(emitter.rate_graph.x) else 0.0
+                    pt.y = float(emitter.rate_graph.y[p]) if p < len(emitter.rate_graph.y) else 0.0
+            else:
+                for p in range(_BURST_POINTS):
+                    pt = item.burst_points.add()
+                    pt.time = float(emitter.burst_graph.times[p]) if p < len(emitter.burst_graph.times) else 0.0
+                    if p < len(emitter.burst_graph.num_particles):
+                        pt.num_a = int(emitter.burst_graph.num_particles[p][0])
+                        pt.num_b = int(emitter.burst_graph.num_particles[p][1])
+
         if system.visualizer is not None:
             item = settings.visualizers.add()
             item.label = f"V{len(settings.visualizers)-1} S{system_index}"
@@ -3131,6 +3280,7 @@ def _apply_settings_to_state_data(settings):
     opacity_graphs = [g for g in settings.graphs if g.kind == "OPACITY"]
     color_graphs = list(settings.color_graphs)
     transforms = list(settings.transforms)
+    emitters = list(settings.emitters)
     visualizers = list(settings.visualizers)
 
     other_index = 0
@@ -3138,6 +3288,7 @@ def _apply_settings_to_state_data(settings):
     opacity_index = 0
     color_index = 0
     transform_index = 0
+    emitter_index = 0
     visualizer_index = 0
 
     for system in effect.particle_systems:
@@ -3172,6 +3323,13 @@ def _apply_settings_to_state_data(settings):
                 float(transform.rot_z),
             )
             transform_index += 1
+        for emitter in system.emitters:
+            if emitter_index < len(emitters):
+                try:
+                    _apply_settings_emitter_to_model(emitters[emitter_index], emitter)
+                except Exception as exc:
+                    return False, f"Failed to apply emitter data: {exc}"
+                emitter_index += 1
         if system.visualizer is not None and visualizer_index < len(visualizers):
             vis = visualizers[visualizer_index]
             system.visualizer.visualizer_type = {
@@ -3282,6 +3440,20 @@ def _apply_settings_to_state_data_in_place(settings):
 
     for transform in settings.transforms:
         _write_transform_to_bytes(data, transform)
+
+    for emitter in settings.emitters:
+        try:
+            payload = _pack_emitter_from_settings(emitter)
+        except Exception as exc:
+            return False, f"Failed to pack emitter data: {exc}"
+        if int(emitter.offset) < 0 or int(emitter.offset) + 4 > len(data):
+            continue
+        original_type = struct.unpack_from("<I", data, int(emitter.offset))[0]
+        expected_type = _EMITTER_RATE if emitter.emitter_type == "RATE" else _EMITTER_BURST
+        if original_type != expected_type:
+            return False, "Changing emitter type is not supported"
+        if not _write_bytes_at(data, int(emitter.offset), payload):
+            return False, "Failed to write emitter data"
 
     STATE.data = data
     STATE.version = header["version"]
