@@ -1125,6 +1125,37 @@ def _selected_color_cells_map_from_cells(cells):
     return mapping
 
 
+def _selected_numeric_cells_from_cells(cells):
+    numeric_cells = []
+    for key in cells:
+        parts = key.split(":")
+        if len(parts) != 4:
+            continue
+        group, gidx, pidx, field = parts
+        if group == "graph" and field in {"time", "value"}:
+            numeric_cells.append((group, int(gidx), int(pidx), field))
+        elif group == "color" and field == "time":
+            numeric_cells.append((group, int(gidx), int(pidx), field))
+    return numeric_cells
+
+
+def _build_flat_graph_offset_maps(graph_infos):
+    graph_offsets = []
+    color_offsets = []
+    for info in graph_infos:
+        for off in info.other_offsets:
+            graph_offsets.append(info.offset + off)
+        for idx, off in enumerate(info.scale_offsets):
+            if idx < len(info.scale_graphs) and info.scale_graphs[idx] is None:
+                continue
+            graph_offsets.append(info.offset + off)
+        for off in info.opacity_offsets:
+            graph_offsets.append(info.offset + off)
+        for off in info.color_offsets:
+            color_offsets.append(info.offset + off)
+    return graph_offsets, color_offsets
+
+
 def _apply_color_to_bytes(data: bytearray, version: int, num_variables: int, num_systems: int, selection_map, color_rgb):
     graph_infos = _scan_graphs(data, version, num_variables, num_systems)
     data_len = len(data)
@@ -1145,6 +1176,29 @@ def _apply_color_to_bytes(data: bytearray, version: int, num_variables: int, num
             if pos < 0 or pos + 12 > data_len:
                 continue
             struct.pack_into("<fff", data, pos, float(r), float(g), float(b))
+
+
+def _apply_number_to_bytes(data: bytearray, version: int, num_variables: int, num_systems: int, numeric_cells, value):
+    graph_infos = _scan_graphs(data, version, num_variables, num_systems)
+    graph_offsets, color_offsets = _build_flat_graph_offset_maps(graph_infos)
+    data_len = len(data)
+    for group, gidx, pidx, field in numeric_cells:
+        if pidx < 0 or pidx >= _GRAPH_POINTS:
+            continue
+        if group == "graph":
+            if gidx < 0 or gidx >= len(graph_offsets):
+                continue
+            base = graph_offsets[gidx]
+            pos = base + (pidx * 4) if field == "time" else base + (_GRAPH_POINTS * 4) + (pidx * 4)
+        elif group == "color":
+            if gidx < 0 or gidx >= len(color_offsets):
+                continue
+            pos = color_offsets[gidx] + (pidx * 4)
+        else:
+            continue
+        if pos < 0 or pos + 4 > data_len:
+            continue
+        struct.pack_into("<f", data, pos, float(value))
 
 
 def _write_variables(data: bytearray, version: int, variables):
@@ -1745,6 +1799,7 @@ class Hd2ParticleModderSettings(PropertyGroup):
     selected_cells: StringProperty(name="Selected Cells", default="")
     last_selected_cell: StringProperty(name="Last Selected Cell", default="")
     color_apply: FloatVectorProperty(name="Color", size=3, subtype="COLOR", default=(1.0, 1.0, 1.0), min=0.0, max=1.0, soft_min=0.0, soft_max=1.0)
+    number_apply: FloatProperty(name="Number", default=0.0)
     emitters: CollectionProperty(type=Hd2EmitterItem)
     emitters_index: IntProperty(name="Emitter Index", default=0)
     transforms: CollectionProperty(type=Hd2SystemTransformItem)
@@ -2165,6 +2220,75 @@ class HD2_OT_ColorApplySelected(Operator):
         return {"FINISHED"}
 #endregion
 
+
+#region Operators: Apply Number
+class HD2_OT_NumberApplySelected(Operator):
+    bl_idname = "hd2.particle_number_apply_selected"
+    bl_label = "Apply Number To Selected"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        settings = context.scene.Hd2ParticleModderSettings
+        numeric_cells = _selected_numeric_cells_from_cells(_parse_selected_cells_value(settings.selected_cells))
+        if not numeric_cells:
+            return {"CANCELLED"}
+        value = float(settings.number_apply)
+
+        touched_graph_indices = set()
+        for group, gidx, pidx, field in numeric_cells:
+            if group == "graph":
+                if gidx < 0 or gidx >= len(settings.graphs):
+                    continue
+                graph = settings.graphs[gidx]
+                if pidx < 0 or pidx >= len(graph.points):
+                    continue
+                if field == "time":
+                    graph.points[pidx].x = value
+                else:
+                    graph.points[pidx].y = value
+                touched_graph_indices.add(gidx)
+            elif group == "color":
+                if gidx < 0 or gidx >= len(settings.color_graphs):
+                    continue
+                graph = settings.color_graphs[gidx]
+                if pidx < 0 or pidx >= len(graph.points):
+                    continue
+                graph.points[pidx].x = value
+
+        if settings.graphs_index in touched_graph_indices:
+            idx = settings.graphs_index
+            if 0 <= idx < len(settings.graphs):
+                _load_curve_from_graph(settings, settings.graphs[idx])
+
+        for key, entry in STATE.loaded_cache.items():
+            try:
+                if key == STATE.filepath:
+                    entry_cells = settings.selected_cells
+                else:
+                    entry_cells = entry.get("selected_cells", "")
+                entry_numeric_cells = _selected_numeric_cells_from_cells(
+                    _parse_selected_cells_value(entry_cells)
+                )
+                if not entry_numeric_cells:
+                    continue
+                data = bytearray(entry["data"])
+                header = _parse_header(data)
+                if header is None:
+                    continue
+                _apply_number_to_bytes(
+                    data,
+                    header["version"],
+                    header["num_variables"],
+                    header["num_systems"],
+                    entry_numeric_cells,
+                    value,
+                )
+                entry["data"] = data
+            except Exception:
+                continue
+        return {"FINISHED"}
+#endregion
+
 #region Menus: Presets
 class HD2_MT_ColorSave(Menu):
     bl_label = "Save"
@@ -2511,11 +2635,11 @@ class HD2_PT_ParticleModder(Panel):
             tool.prop(settings, "show_time_color", text="Time")
             tool.prop(settings, "show_color_color", text="Color")
             tool.prop(settings, "color_apply", text="")
-            tool.operator("hd2.particle_color_apply_selected", text="Apply")
+            tool.operator("hd2.particle_color_apply_selected", text="Apply Color")
+            tool.prop(settings, "number_apply", text="")
+            tool.operator("hd2.particle_number_apply_selected", text="Apply Num")
             tool.operator("hd2.particle_color_select_all", text="All")
             tool.operator("hd2.particle_color_select_none", text="None")
-            tool.menu("HD2_MT_ColorSave", text="Save")
-            tool.menu("HD2_MT_ColorLoad", text="Load")
             if not settings.has_data:
                 box.label(text="Load a particle to edit color graphs.")
             header = box.row(align=True)
@@ -2536,6 +2660,8 @@ class HD2_PT_ParticleModder(Panel):
             tool = box.row(align=True)
             tool.prop(settings, "show_time_opacity", text="Time")
             tool.prop(settings, "show_value_opacity", text="Opacity")
+            tool.prop(settings, "number_apply", text="")
+            tool.operator("hd2.particle_number_apply_selected", text="Apply Num")
             tool.operator("hd2.particle_graph_editor", text="Open Graph")
             if not settings.has_data:
                 box.label(text="Load a particle to edit opacity graphs.")
@@ -2557,6 +2683,8 @@ class HD2_PT_ParticleModder(Panel):
             tool = box.row(align=True)
             tool.prop(settings, "show_time_intensity", text="Time")
             tool.prop(settings, "show_value_intensity", text="Size")
+            tool.prop(settings, "number_apply", text="")
+            tool.operator("hd2.particle_number_apply_selected", text="Apply Num")
             tool.operator("hd2.particle_graph_editor", text="Open Graph")
             if not settings.has_data:
                 box.label(text="Load a particle to edit intensity graphs.")
@@ -2699,6 +2827,7 @@ CLASSES = (
     HD2_OT_ColorSelectAll,
     HD2_OT_ColorSelectNone,
     HD2_OT_ColorApplySelected,
+    HD2_OT_NumberApplySelected,
     HD2_MT_ColorSave,
     HD2_MT_ColorLoad,
     HD2_OT_GraphEditor,
