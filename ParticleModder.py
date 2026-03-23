@@ -1876,31 +1876,64 @@ class Hd2LoadedParticleItem(PropertyGroup):
 
 class HD2_UL_LoadedParticles(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        settings = context.scene.Hd2ParticleModderSettings
         row = layout.row(align=True)
-        row.label(text=item.label)
+        split = row.split(factor=0.10, align=True)
+        toggle_col = split.row(align=True)
+        toggle = toggle_col.operator(
+            "hd2.particle_apply_target_toggle",
+            text="",
+            icon="CHECKBOX_HLT" if _is_apply_target(settings, item.key) else "CHECKBOX_DEHLT",
+            emboss=True,
+        )
+        toggle.key = item.key
+        info = split.row(align=True)
+        info.label(text=item.label)
         if item.is_archive:
-            row.label(text=item.file_id)
+            info.label(text=item.file_id)
 
 
 class HD2_UL_ArchiveParticles(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        row = layout.row(align=True)
         settings = context.scene.Hd2ParticleModderSettings
+        row = layout.row(align=True)
+        split = row.split(factor=0.10, align=True)
+        archive_key = f"archive:{item.item_name}"
+        toggle_col = split.row(align=True)
+        toggle = toggle_col.operator(
+            "hd2.particle_apply_target_toggle",
+            text="",
+            icon="CHECKBOX_HLT" if _is_apply_target(settings, archive_key) else "CHECKBOX_DEHLT",
+            emboss=True,
+        )
+        toggle.key = archive_key
+        body = split.row(align=True)
         is_active = bool(settings.is_archive and str(settings.entry_file_id) == str(item.item_name))
-        op = row.operator(
+        op = body.operator(
             "helldiver2.particle_modder_edit",
             text=item.item_filter_name if item.item_filter_name else item.item_name,
             emboss=True,
             depress=is_active,
         )
         op.object_id = item.item_name
-        row.operator("helldiver2.particle_search_used_ids", icon="VIEWZOOM", text="").object_id = item.item_name
+        body.operator("helldiver2.particle_search_used_ids", icon="VIEWZOOM", text="").object_id = item.item_name
 
 
 class HD2_UL_DumpParticles(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        settings = context.scene.Hd2ParticleModderSettings
         row = layout.row(align=True)
-        op = row.operator(
+        split = row.split(factor=0.10, align=True)
+        toggle_col = split.row(align=True)
+        toggle = toggle_col.operator(
+            "hd2.particle_apply_target_toggle",
+            text="",
+            icon="CHECKBOX_HLT" if _is_apply_target(settings, item.key) else "CHECKBOX_DEHLT",
+            emboss=True,
+        )
+        toggle.key = item.key
+        body = split.row(align=True)
+        op = body.operator(
             "hd2.particle_loaded_select",
             text=item.file_id if item.file_id else item.label,
             emboss=True,
@@ -1934,6 +1967,7 @@ class Hd2ParticleModderSettings(PropertyGroup):
     color_selected_indices: StringProperty(name="Color Selected", default="")
     selected_cells: StringProperty(name="Selected Cells", default="")
     last_selected_cell: StringProperty(name="Last Selected Cell", default="")
+    apply_target_keys: StringProperty(name="Apply Targets", default="")
     color_apply: FloatVectorProperty(name="Color", size=3, subtype="COLOR", default=(1.0, 1.0, 1.0), min=0.0, max=1.0, soft_min=0.0, soft_max=1.0)
     number_apply: FloatProperty(name="Number", default=0.0)
     emitters: CollectionProperty(type=Hd2EmitterItem)
@@ -2219,6 +2253,24 @@ class HD2_OT_LoadedParticleSelect(Operator):
         finally:
             STATE.suspend_selection_sync = False
         return {"FINISHED"}
+
+
+class HD2_OT_ParticleApplyTargetToggle(Operator):
+    bl_idname = "hd2.particle_apply_target_toggle"
+    bl_label = "Toggle Apply-All Target"
+    bl_options = {"REGISTER", "UNDO"}
+
+    key: StringProperty()
+
+    def execute(self, context):
+        settings = context.scene.Hd2ParticleModderSettings
+        keys = _parse_apply_target_keys(settings)
+        if self.key in keys:
+            keys.remove(self.key)
+        else:
+            keys.add(self.key)
+        _set_apply_target_keys(settings, keys)
+        return {"FINISHED"}
 #endregion
 
 #region Operators: Tabs
@@ -2326,10 +2378,52 @@ class HD2_OT_ColorApplySelected(Operator):
                 point.r = r
                 point.g = g
                 point.b = b
-        # Apply to all loaded cache entries
-        for key, entry in STATE.loaded_cache.items():
+        _cache_current(settings)
+        return {"FINISHED"}
+
+
+class HD2_OT_ColorApplyAllSelected(Operator):
+    bl_idname = "hd2.particle_color_apply_all_selected"
+    bl_label = "Apply Color To Checked Particles"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        settings = context.scene.Hd2ParticleModderSettings
+        targets = _parse_apply_target_keys(settings)
+        if not targets:
+            return {"CANCELLED"}
+
+        r = settings.color_apply[0] * 255.0
+        g = settings.color_apply[1] * 255.0
+        b = settings.color_apply[2] * 255.0
+        applied = 0
+        skipped = 0
+
+        current_key = settings.filepath
+        if current_key in targets:
+            selection_map = _selected_color_cells_map_from_cells(_parse_selected_cells_value(settings.selected_cells))
+            if selection_map:
+                for gidx, points in selection_map.items():
+                    if gidx < 0 or gidx >= len(settings.color_graphs):
+                        continue
+                    graph = settings.color_graphs[gidx]
+                    for pidx in points:
+                        if pidx < 0 or pidx >= len(graph.points):
+                            continue
+                        point = graph.points[pidx]
+                        point.color = settings.color_apply
+                        point.r = r
+                        point.g = g
+                        point.b = b
+                _cache_current(settings)
+
+        for key in sorted(targets):
+            entry = STATE.loaded_cache.get(key)
+            if entry is None:
+                skipped += 1
+                continue
             try:
-                if key == STATE.filepath:
+                if key == current_key:
                     entry_cells = settings.selected_cells
                 else:
                     entry_cells = entry.get("selected_cells", "")
@@ -2337,10 +2431,12 @@ class HD2_OT_ColorApplySelected(Operator):
                     _parse_selected_cells_value(entry_cells)
                 )
                 if not entry_selection_map:
+                    skipped += 1
                     continue
                 data = bytearray(entry["data"])
                 header = _parse_header(data)
                 if header is None:
+                    skipped += 1
                     continue
                 _apply_color_to_bytes(
                     data,
@@ -2351,8 +2447,20 @@ class HD2_OT_ColorApplySelected(Operator):
                     (r, g, b),
                 )
                 entry["data"] = data
+                if key == current_key:
+                    entry["selected_cells"] = settings.selected_cells
+                    entry["last_selected_cell"] = settings.last_selected_cell
+                applied += 1
             except Exception:
+                skipped += 1
                 continue
+
+        if applied == 0:
+            return {"CANCELLED"}
+        if skipped:
+            self.report({"INFO"}, f"Applied color to {applied} particle(s), skipped {skipped}")
+        else:
+            self.report({"INFO"}, f"Applied color to {applied} particle(s)")
         return {"FINISHED"}
 #endregion
 
@@ -2456,6 +2564,21 @@ def _parse_selected_cells(settings):
 
 def _set_selected_cells(settings, cells):
     settings.selected_cells = "|".join(cells)
+
+
+def _parse_apply_target_keys(settings):
+    value = getattr(settings, "apply_target_keys", "")
+    if not value:
+        return set()
+    return {part for part in value.split("|") if part}
+
+
+def _set_apply_target_keys(settings, keys):
+    settings.apply_target_keys = "|".join(sorted(k for k in keys if k))
+
+
+def _is_apply_target(settings, key):
+    return key in _parse_apply_target_keys(settings)
 
 
 class HD2_OT_CellSelect(Operator):
@@ -2743,6 +2866,7 @@ class HD2_PT_ParticleModder(Panel):
             particle_box.template_list("HD2_UL_DumpParticles", "", settings, "loaded_dump_particles", settings, "loaded_dump_particles_index", rows=6)
             if not settings.loaded_dump_particles:
                 particle_box.label(text="No dump particle loaded. Use Open to load .particle/.particles file.")
+        particle_box.label(text="Checked particles are used by Color > Apply All.", icon="CHECKBOX_HLT")
 
         col = layout.column()
 
@@ -2779,7 +2903,8 @@ class HD2_PT_ParticleModder(Panel):
             apply_row = box.row(align=True)
             color_group = apply_row.row(align=True)
             color_group.prop(settings, "color_apply", text="Color")
-            color_group.operator("hd2.particle_color_apply_selected", text="Apply Color", icon="BRUSH_DATA")
+            color_group.operator("hd2.particle_color_apply_selected", text="Apply", icon="BRUSH_DATA")
+            color_group.operator("hd2.particle_color_apply_all_selected", text="Apply All", icon="CHECKBOX_HLT")
             number_group = apply_row.row(align=True)
             number_group.prop(settings, "number_apply", text="Number")
             number_group.operator("hd2.particle_number_apply_selected", text="Apply Number", icon="DRIVER")
@@ -2989,11 +3114,13 @@ CLASSES = (
     HD2_OT_ColorSelectAll,
     HD2_OT_ColorSelectNone,
     HD2_OT_ColorApplySelected,
+    HD2_OT_ColorApplyAllSelected,
     HD2_OT_NumberApplySelected,
     HD2_MT_ColorSave,
     HD2_MT_ColorLoad,
     HD2_OT_GraphEditor,
     HD2_OT_LoadedParticleSelect,
+    HD2_OT_ParticleApplyTargetToggle,
     HD2_OT_CellSelect,
     HD2_OT_RowSelect,
     HD2_OT_SetParticleTab,
