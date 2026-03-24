@@ -468,9 +468,31 @@ def FormatArchiveMatch(match):
 
 def ParseParticleVisualizerRefs(TocData):
     refs = []
+    try:
+        effect = particle_modder_m._parse_particle_effect_model(bytearray(TocData))
+    except Exception:
+        effect = None
+
+    if effect is not None:
+        for system_index, system in enumerate(effect.particle_systems):
+            visualizer = getattr(system, "visualizer", None)
+            if visualizer is None:
+                continue
+            material_id = int(getattr(visualizer, "material_id", 0) or 0)
+            unit_id = int(getattr(visualizer, "unit_id", 0) or 0)
+            mesh_id = int(getattr(visualizer, "mesh_id", 0) or 0)
+            refs.append({
+                "system_index": system_index,
+                "visualizer_type": int(getattr(visualizer, "visualizer_type", -1)),
+                "material_id": material_id if material_id != 0 else None,
+                "unit_id": unit_id if unit_id != 0 else None,
+                "mesh_id": mesh_id if mesh_id != 0 else None,
+            })
+        return refs
+
     f = MemoryStream(TocData)
     particle_version = f.uint32(0)
-    if particle_version not in [0x71, 0x6F, 0x6E, 0x6D]:
+    if particle_version not in [0x72, 0x71, 0x6F, 0x6E, 0x6D]:
         return refs
 
     f.float32(0)
@@ -479,7 +501,7 @@ def ParseParticleVisualizerRefs(TocData):
     num_variables = f.uint32(0)
     num_particle_systems = f.uint32(0)
     f.seek(f.tell() + 44)
-    if particle_version in [0x6F, 0x71]:
+    if particle_version in [0x6F, 0x71, 0x72]:
         f.seek(f.tell() + 8)
 
     for _ in range(num_variables):
@@ -491,14 +513,14 @@ def ParseParticleVisualizerRefs(TocData):
 
     for system_index in range(num_particle_systems):
         system_offset = f.tell()
-        f.uint32(0)  # max_num_particles
-        f.uint32(0)  # num_components
+        f.uint32(0)
+        f.uint32(0)
         f.seek(f.tell() + 68)
         non_rendering = f.uint32(0)
         f.seek(f.tell() + 40 + 48 + 12 + 52)
-        f.uint32(0)  # component_list_offset
+        f.uint32(0)
         f.seek(f.tell() + 4)
-        f.uint32(0)  # emitter_offset
+        f.uint32(0)
         f.seek(f.tell() + 8)
         visualizer_offset = f.uint32(0)
         system_size = f.uint32(0)
