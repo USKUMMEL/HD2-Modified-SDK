@@ -120,6 +120,8 @@ from .ParticleModder import (
     HD2_OT_GraphEditor,
     HD2_OT_LoadedParticleSelect,
     HD2_OT_ParticleApplyTargetToggle,
+    HD2_OT_ParticleApplyDestinationTogglePick,
+    HD2_OT_ParticleApplyDestinationSet,
     HD2_OT_CellSelect,
     HD2_OT_RowSelect,
     HD2_OT_SetParticleTab,
@@ -3829,6 +3831,7 @@ class ParticleModderEditEntryOperator(Operator):
             entry_id,
             ParticleID,
             True,
+            archive_name=getattr(getattr(context.scene, "Hd2ToolPanelSettings", None), "LoadedArchives", ""),
         )
         if not ok:
             self.report({'ERROR'}, err)
@@ -3845,8 +3848,8 @@ class ParticleModderApplyEntryOperator(Operator):
 
     def execute(self, context):
         settings = context.scene.Hd2ParticleModderSettings
-        if not settings.has_data or not settings.is_archive:
-            self.report({'ERROR'}, "No archive particle loaded")
+        if not settings.has_data:
+            self.report({'ERROR'}, "No particle loaded")
             return {'CANCELLED'}
 
         ok, err = particle_modder_m.apply_settings_to_state(context, upgrade_to_current=False)
@@ -3855,29 +3858,52 @@ class ParticleModderApplyEntryOperator(Operator):
             return {'CANCELLED'}
 
         try:
-            entry_file_id = int(settings.entry_file_id)
-            entry_type_id = int(settings.entry_type_id)
+            if settings.apply_destination_file_id and settings.apply_destination_archive_name:
+                entry_file_id = int(settings.apply_destination_file_id)
+                entry_type_id = ParticleID
+                target_archive_name = str(settings.apply_destination_archive_name)
+            else:
+                if not settings.is_archive:
+                    self.report({'ERROR'}, "No archive destination selected")
+                    return {'CANCELLED'}
+                entry_file_id = int(settings.entry_file_id)
+                entry_type_id = int(settings.entry_type_id)
+                target_archive_name = str(settings.entry_archive_name)
         except ValueError:
             self.report({'ERROR'}, "Invalid entry IDs")
             return {'CANCELLED'}
 
-        entry = Global_TocManager.GetEntry(entry_file_id, entry_type_id, SearchAll=True, IgnorePatch=False)
-        if entry is None:
-            self.report({'ERROR'}, "Entry not found")
-            return {'CANCELLED'}
+        original_archive = Global_TocManager.ActiveArchive
+        try:
+            if target_archive_name:
+                Global_TocManager.SetActiveByName(target_archive_name)
+                if Global_TocManager.ActiveArchive is None or Global_TocManager.ActiveArchive.Name != target_archive_name:
+                    self.report({'ERROR'}, f"Target archive is not loaded: {target_archive_name}")
+                    return {'CANCELLED'}
 
-        if not Global_TocManager.IsInPatch(entry):
-            try:
-                entry = Global_TocManager.AddEntryToPatch(entry_file_id, entry_type_id)
-            except Exception as exc:
-                self.report({'ERROR'}, str(exc))
-                return {'CANCELLED'}
+            entry = Global_TocManager.GetEntry(entry_file_id, entry_type_id, SearchAll=True, IgnorePatch=False)
             if entry is None:
-                self.report({'ERROR'}, "Failed to add entry to patch")
+                self.report({'ERROR'}, "Entry not found")
                 return {'CANCELLED'}
 
-        entry.SetData(bytearray(particle_modder_m.STATE.data), bytearray(entry.GpuData), bytearray(entry.StreamData), True)
-        self.report({'INFO'}, f"Applied edits to particle {entry.FileID}")
+            if not Global_TocManager.IsInPatch(entry):
+                try:
+                    entry = Global_TocManager.AddEntryToPatch(entry_file_id, entry_type_id)
+                except Exception as exc:
+                    self.report({'ERROR'}, str(exc))
+                    return {'CANCELLED'}
+                if entry is None:
+                    self.report({'ERROR'}, "Failed to add entry to patch")
+                    return {'CANCELLED'}
+
+            entry.SetData(bytearray(particle_modder_m.STATE.data), bytearray(entry.GpuData), bytearray(entry.StreamData), True)
+        finally:
+            Global_TocManager.SetActive(original_archive)
+
+        target_label = f"{entry.FileID}"
+        if target_archive_name:
+            target_label = f"{entry.FileID} / {target_archive_name}"
+        self.report({'INFO'}, f"Applied edits to particle {target_label}")
         return {'FINISHED'}
 
 #endregion
@@ -5739,6 +5765,8 @@ classes = (
     HD2_OT_GraphEditor,
     HD2_OT_LoadedParticleSelect,
     HD2_OT_ParticleApplyTargetToggle,
+    HD2_OT_ParticleApplyDestinationTogglePick,
+    HD2_OT_ParticleApplyDestinationSet,
     HD2_OT_CellSelect,
     HD2_OT_RowSelect,
     HD2_OT_SetParticleTab,

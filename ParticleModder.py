@@ -55,6 +55,7 @@ def _cache_current(settings, flush=True):
         "data": bytearray(STATE.data),
         "file_id": settings.entry_file_id,
         "type_id": settings.entry_type_id,
+        "entry_archive_name": settings.entry_archive_name,
         "is_archive": settings.is_archive,
         "selected_cells": settings.selected_cells,
         "last_selected_cell": settings.last_selected_cell,
@@ -1468,6 +1469,24 @@ def _dump_particle_id_from_label(label: str):
     base = os.path.basename(text)
     stem, _ext = os.path.splitext(base)
     return stem if stem else base
+
+
+def _default_particle_export_path(settings):
+    particle_id = str(getattr(settings, "entry_file_id", "")).strip()
+    if not particle_id:
+        particle_id = _dump_particle_id_from_label(getattr(settings, "filepath", "")).strip()
+    if not particle_id:
+        particle_id = "export"
+
+    filename = bpy.path.ensure_ext(particle_id, ".particle")
+    source_path = getattr(settings, "filepath", "")
+    if source_path and os.path.isfile(source_path):
+        base_dir = os.path.dirname(source_path)
+    elif bpy.data.filepath:
+        base_dir = os.path.dirname(bpy.data.filepath)
+    else:
+        base_dir = ""
+    return os.path.join(base_dir, filename) if base_dir else filename
 #endregion
 
 class Hd2ParticleVariableItem(PropertyGroup):
@@ -1896,6 +1915,7 @@ class HD2_UL_LoadedParticles(UIList):
 class HD2_UL_ArchiveParticles(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         settings = context.scene.Hd2ParticleModderSettings
+        archive_name = _current_archive_name(context.scene)
         row = layout.row(align=True)
         split = row.split(factor=0.10, align=True)
         archive_key = f"archive:{item.item_name}"
@@ -1908,14 +1928,29 @@ class HD2_UL_ArchiveParticles(UIList):
         )
         toggle.key = archive_key
         body = split.row(align=True)
-        is_active = bool(settings.is_archive and str(settings.entry_file_id) == str(item.item_name))
-        op = body.operator(
-            "helldiver2.particle_modder_edit",
-            text=item.item_filter_name if item.item_filter_name else item.item_name,
-            emboss=True,
-            depress=is_active,
+        is_destination = (
+            archive_name
+            and str(settings.apply_destination_file_id) == str(item.item_name)
+            and str(settings.apply_destination_archive_name) == str(archive_name)
         )
-        op.object_id = item.item_name
+        is_active = bool(settings.is_archive and str(settings.entry_file_id) == str(item.item_name))
+        if settings.apply_destination_pick_mode and archive_name:
+            op = body.operator(
+                "hd2.particle_apply_destination_set",
+                text=item.item_filter_name if item.item_filter_name else item.item_name,
+                emboss=True,
+                depress=is_destination,
+            )
+            op.file_id = item.item_name
+            op.archive_name = archive_name
+        else:
+            op = body.operator(
+                "helldiver2.particle_modder_edit",
+                text=item.item_filter_name if item.item_filter_name else item.item_name,
+                emboss=True,
+                depress=is_active,
+            )
+            op.object_id = item.item_name
         body.operator("helldiver2.particle_search_used_ids", icon="VIEWZOOM", text="").object_id = item.item_name
 
 
@@ -1957,6 +1992,10 @@ class Hd2ParticleModderSettings(PropertyGroup):
     is_archive: BoolProperty(name="Is Archive", default=False)
     entry_file_id: StringProperty(name="Entry File ID", default="")
     entry_type_id: StringProperty(name="Entry Type ID", default="")
+    entry_archive_name: StringProperty(name="Entry Archive", default="")
+    apply_destination_file_id: StringProperty(name="Apply Destination File ID", default="")
+    apply_destination_archive_name: StringProperty(name="Apply Destination Archive", default="")
+    apply_destination_pick_mode: BoolProperty(name="Pick Apply Destination", default=False)
     variables: CollectionProperty(type=Hd2ParticleVariableItem)
     variables_index: IntProperty(name="Variable Index", default=0)
     graphs: CollectionProperty(type=Hd2GraphItem)
@@ -2228,6 +2267,7 @@ class HD2_OT_LoadedParticleSelect(Operator):
             entry.get("type_id", ""),
             entry.get("is_archive", False),
             cache_current=False,
+            archive_name=entry.get("entry_archive_name", ""),
         )
         if not ok:
             self.report({"ERROR"}, err)
@@ -2270,6 +2310,42 @@ class HD2_OT_ParticleApplyTargetToggle(Operator):
         else:
             keys.add(self.key)
         _set_apply_target_keys(settings, keys)
+        return {"FINISHED"}
+
+
+class HD2_OT_ParticleApplyDestinationTogglePick(Operator):
+    bl_idname = "hd2.particle_apply_destination_toggle_pick"
+    bl_label = "Toggle Apply Destination Picker"
+    bl_options = {"REGISTER", "UNDO"}
+
+    clear: BoolProperty(default=False)
+
+    def execute(self, context):
+        settings = context.scene.Hd2ParticleModderSettings
+        if self.clear:
+            settings.apply_destination_file_id = ""
+            settings.apply_destination_archive_name = ""
+            settings.apply_destination_pick_mode = False
+        else:
+            settings.apply_destination_pick_mode = not settings.apply_destination_pick_mode
+        return {"FINISHED"}
+
+
+class HD2_OT_ParticleApplyDestinationSet(Operator):
+    bl_idname = "hd2.particle_apply_destination_set"
+    bl_label = "Set Apply Destination"
+    bl_options = {"REGISTER", "UNDO"}
+
+    file_id: StringProperty(default="")
+    archive_name: StringProperty(default="")
+
+    def execute(self, context):
+        settings = context.scene.Hd2ParticleModderSettings
+        if not self.file_id or not self.archive_name:
+            return {"CANCELLED"}
+        settings.apply_destination_file_id = str(self.file_id)
+        settings.apply_destination_archive_name = str(self.archive_name)
+        settings.apply_destination_pick_mode = False
         return {"FINISHED"}
 #endregion
 
@@ -2581,6 +2657,31 @@ def _is_apply_target(settings, key):
     return key in _parse_apply_target_keys(settings)
 
 
+def _current_archive_name(scene):
+    tool_settings = getattr(scene, "Hd2ToolPanelSettings", None)
+    if tool_settings is None:
+        return ""
+    value = getattr(tool_settings, "LoadedArchives", "")
+    return str(value) if value else ""
+
+
+def _has_apply_destination(settings):
+    return bool(
+        str(getattr(settings, "apply_destination_file_id", "")).strip()
+        and str(getattr(settings, "apply_destination_archive_name", "")).strip()
+    )
+
+
+def _describe_apply_destination(settings):
+    if _has_apply_destination(settings):
+        return f"{settings.apply_destination_file_id} / {settings.apply_destination_archive_name}"
+    if settings.is_archive and settings.entry_file_id:
+        if settings.entry_archive_name:
+            return f"{settings.entry_file_id} / {settings.entry_archive_name} (current)"
+        return f"{settings.entry_file_id} (current)"
+    return "Current particle"
+
+
 class HD2_OT_CellSelect(Operator):
     bl_idname = "hd2.particle_cell_select"
     bl_label = "Select Cell"
@@ -2762,6 +2863,11 @@ class HD2_OT_ParticleModderSave(Operator, ExportHelper):
     filename_ext = ".particle"
     filter_glob: StringProperty(default="*.particle", options={"HIDDEN"})
 
+    def invoke(self, context, event):
+        self.filepath = _default_particle_export_path(context.scene.Hd2ParticleModderSettings)
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
     def execute(self, context):
         settings = context.scene.Hd2ParticleModderSettings
         if not settings.has_data or STATE.data is None:
@@ -2772,7 +2878,7 @@ class HD2_OT_ParticleModderSave(Operator, ExportHelper):
             self.report({"ERROR"}, err)
             return {"CANCELLED"}
 
-        export_path = self.filepath or settings.filepath or "export.particle"
+        export_path = self.filepath or _default_particle_export_path(settings)
         if not export_path.lower().endswith(".particle"):
             export_path = f"{export_path}.particle"
 
@@ -2839,10 +2945,21 @@ class HD2_PT_ParticleModder(Panel):
         btn_row = header.row(align=True)
         btn_row.operator("hd2.particle_modder_load", icon="FILE_FOLDER", text="Open")
         btn_row.operator("hd2.particle_modder_save", icon="FILE_TICK", text="Export .particle")
-        if settings.is_archive:
+        if settings.is_archive or _has_apply_destination(settings):
             btn_row.operator("helldiver2.particle_modder_apply_entry", icon="FILE_TICK", text="Apply")
         else:
             btn_row.operator("hd2.particle_modder_apply", icon="CHECKMARK", text="Apply")
+        apply_to_row = header.row(align=True)
+        apply_to_row.label(text="Apply To:")
+        pick = apply_to_row.operator(
+            "hd2.particle_apply_destination_toggle_pick",
+            text="Pick from archive list..." if settings.apply_destination_pick_mode else _describe_apply_destination(settings),
+            icon="EYEDROPPER",
+            depress=settings.apply_destination_pick_mode,
+        )
+        pick.clear = False
+        clear = apply_to_row.operator("hd2.particle_apply_destination_toggle_pick", text="", icon="X")
+        clear.clear = True
 
         particle_box = layout.box()
         particle_box.label(text="Particle Sources", icon="FILE_FOLDER")
@@ -2866,6 +2983,8 @@ class HD2_PT_ParticleModder(Panel):
             particle_box.template_list("HD2_UL_DumpParticles", "", settings, "loaded_dump_particles", settings, "loaded_dump_particles_index", rows=6)
             if not settings.loaded_dump_particles:
                 particle_box.label(text="No dump particle loaded. Use Open to load .particle/.particles file.")
+        if settings.apply_destination_pick_mode:
+            particle_box.label(text="Picking apply destination from Archive Particles.", icon="EYEDROPPER")
         particle_box.label(text="Checked particles are used by Color > Apply All.", icon="CHECKBOX_HLT")
 
         col = layout.column()
@@ -3121,6 +3240,8 @@ CLASSES = (
     HD2_OT_GraphEditor,
     HD2_OT_LoadedParticleSelect,
     HD2_OT_ParticleApplyTargetToggle,
+    HD2_OT_ParticleApplyDestinationTogglePick,
+    HD2_OT_ParticleApplyDestinationSet,
     HD2_OT_CellSelect,
     HD2_OT_RowSelect,
     HD2_OT_SetParticleTab,
@@ -3141,7 +3262,7 @@ def unregister_properties():
         del bpy.types.Scene.Hd2ParticleModderSettings
 
 #region Public API
-def load_from_bytes(context, data, label, file_id=0, type_id=0, is_archive=False, cache_current=True):
+def load_from_bytes(context, data, label, file_id=0, type_id=0, is_archive=False, cache_current=True, archive_name=""):
     settings = context.scene.Hd2ParticleModderSettings
     try:
         if not isinstance(data, bytearray):
@@ -3162,6 +3283,13 @@ def load_from_bytes(context, data, label, file_id=0, type_id=0, is_archive=False
     STATE.data = data
     STATE.version = effect.version
 
+    cached = STATE.loaded_cache.get(label)
+    resolved_archive_name = str(archive_name).strip() if archive_name else ""
+    if not resolved_archive_name and cached is not None:
+        resolved_archive_name = str(cached.get("entry_archive_name", "")).strip()
+    if not resolved_archive_name and is_archive:
+        resolved_archive_name = _current_archive_name(context.scene)
+
     settings.filepath = label
     settings.version = effect.version
     settings.min_lifetime = effect.min_lifetime
@@ -3171,9 +3299,9 @@ def load_from_bytes(context, data, label, file_id=0, type_id=0, is_archive=False
     settings.is_archive = bool(is_archive)
     settings.entry_file_id = str(file_id)
     settings.entry_type_id = str(type_id)
+    settings.entry_archive_name = resolved_archive_name if is_archive else ""
     settings.has_data = True
 
-    cached = STATE.loaded_cache.get(label)
     if cached is not None:
         settings.selected_cells = cached.get("selected_cells", "")
         settings.last_selected_cell = cached.get("last_selected_cell", "")
@@ -3601,6 +3729,7 @@ def apply_settings_to_state(context, upgrade_to_current=False):
         "data": bytearray(STATE.data),
         "file_id": settings.entry_file_id,
         "type_id": settings.entry_type_id,
+        "entry_archive_name": settings.entry_archive_name,
         "is_archive": settings.is_archive,
         "selected_cells": settings.selected_cells,
         "last_selected_cell": settings.last_selected_cell,
@@ -3613,6 +3742,7 @@ def apply_settings_to_state(context, upgrade_to_current=False):
         settings.entry_type_id,
         settings.is_archive,
         cache_current=False,
+        archive_name=settings.entry_archive_name,
     )
     if not ok:
         return False, err
