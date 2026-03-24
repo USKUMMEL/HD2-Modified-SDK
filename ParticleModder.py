@@ -1913,6 +1913,21 @@ class HD2_UL_LoadedParticles(UIList):
 
 
 class HD2_UL_ArchiveParticles(UIList):
+    def filter_items(self, context, data, propname):
+        items = getattr(data, propname)
+        query = ""
+        tool_settings = getattr(context.scene, "Hd2ToolPanelSettings", None)
+        if tool_settings is not None:
+            query = str(getattr(tool_settings, "SearchField", "") or "").strip()
+        if query.startswith("0x"):
+            try:
+                query = str(int(query, 16))
+            except ValueError:
+                pass
+        if not query:
+            return [self.bitflag_filter_item] * len(items), []
+        return bpy.types.UI_UL_list.filter_items_by_name(query, self.bitflag_filter_item, items, "item_filter_name"), []
+
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         settings = context.scene.Hd2ParticleModderSettings
         archive_name = _current_archive_name(context.scene)

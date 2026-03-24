@@ -4809,7 +4809,7 @@ class Hd2ToolPanelSettings(PropertyGroup):
     ParentArmature   : BoolProperty(name="Parent Armatures", description = "Make imported armatures the parent of the imported mesh", default = True)
     SplitUVIslands   : BoolProperty(name="Split UV Islands", description = "Split mesh by UV islands when saving", default = False)
     # Search
-    SearchField      : StringProperty(default = "", update=ChangeSearchString)
+    SearchField      : StringProperty(default = "", update=ChangeSearchString, options={'TEXTEDIT_UPDATE'})
 
     # Tools
     EnableTools           : BoolProperty(name="Special Tools", description = "Enable advanced SDK Tools", default = False)
