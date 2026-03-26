@@ -2067,6 +2067,8 @@ class Hd2ParticleModderSettings(PropertyGroup):
     overall_rotation_z: FloatProperty(name="Overall Rotation Z", default=0.0, subtype="ANGLE")
     visualizers: CollectionProperty(type=Hd2VisualizerItem)
     visualizers_index: IntProperty(name="Visualizer Index", default=0)
+    visualizer_find_material_id: StringProperty(name="Find Material ID", default="")
+    visualizer_replace_material_id: StringProperty(name="Replace Material ID", default="")
     loaded_particles: CollectionProperty(type=Hd2LoadedParticleItem)
     loaded_particles_index: IntProperty(name="Loaded Particle Index", default=0, update=_on_loaded_particle_index_change)
     loaded_dump_particles: CollectionProperty(type=Hd2LoadedParticleItem)
@@ -2392,6 +2394,54 @@ class HD2_OT_ParticleApplyDestinationSet(Operator):
         settings.apply_destination_file_id = str(self.file_id)
         settings.apply_destination_archive_name = str(self.archive_name)
         settings.apply_destination_pick_mode = False
+        return {"FINISHED"}
+#endregion
+
+#region Operators: Visualizers
+class HD2_OT_VisualizerReplaceMaterialId(Operator):
+    bl_idname = "hd2.particle_visualizer_replace_material_id"
+    bl_label = "Replace Material ID"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @staticmethod
+    def _normalize(value):
+        text = str(value).strip()
+        if not text:
+            return None, ""
+        try:
+            return int(text, 0), str(int(text, 0))
+        except (ValueError, TypeError):
+            return None, text
+
+    def execute(self, context):
+        settings = context.scene.Hd2ParticleModderSettings
+        find_num, find_text = self._normalize(settings.visualizer_find_material_id)
+        repl_num, repl_text = self._normalize(settings.visualizer_replace_material_id)
+        if not find_text:
+            self.report({"ERROR"}, "Find Material ID is empty")
+            return {"CANCELLED"}
+        if not repl_text:
+            self.report({"ERROR"}, "Replace Material ID is empty")
+            return {"CANCELLED"}
+
+        replaced = 0
+        for vis in settings.visualizers:
+            current_num, current_text = self._normalize(vis.material_id)
+            matches = False
+            if find_num is not None and current_num is not None:
+                matches = current_num == find_num
+            else:
+                matches = current_text == find_text
+            if not matches:
+                continue
+            vis.material_id = repl_text
+            replaced += 1
+
+        if replaced == 0:
+            self.report({"INFO"}, "No visualizer material IDs matched")
+            return {"CANCELLED"}
+
+        self.report({"INFO"}, f"Replaced material ID in {replaced} visualizer(s)")
         return {"FINISHED"}
 #endregion
 
@@ -3171,6 +3221,10 @@ class HD2_PT_ParticleModder(Panel):
             box = col.box()
             sub = box.row(align=True)
             sub.label(text="Visualizers", icon="SHADING_RENDERED")
+            replace_row = box.row(align=True)
+            replace_row.prop(settings, "visualizer_find_material_id", text="Find Material ID")
+            replace_row.prop(settings, "visualizer_replace_material_id", text="Replace With")
+            replace_row.operator("hd2.particle_visualizer_replace_material_id", text="Replace")
             row = box.row()
             row.template_list("HD2_UL_Visualizers", "", settings, "visualizers", settings, "visualizers_index", rows=6)
             if settings.visualizers and 0 <= settings.visualizers_index < len(settings.visualizers):
@@ -3288,6 +3342,7 @@ CLASSES = (
     HD2_OT_ParticleApplyTargetToggle,
     HD2_OT_ParticleApplyDestinationTogglePick,
     HD2_OT_ParticleApplyDestinationSet,
+    HD2_OT_VisualizerReplaceMaterialId,
     HD2_OT_CellSelect,
     HD2_OT_RowSelect,
     HD2_OT_SetParticleTab,
