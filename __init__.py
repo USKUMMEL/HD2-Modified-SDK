@@ -1,6 +1,6 @@
 bl_info = {
     "name": "Helldivers 2 SDK: Community Edition",
-    "version": (3, 4, 2),
+    "version": (3, 4, 3),
     "blender": (4, 0, 0),
     "category": "Import-Export",
 }
@@ -1767,49 +1767,6 @@ def GenerateMaterialTextures(Entry):
 
 #endregion
 
-# Multi-OS texconv command handler.
-def _texconv(in_path, *, out_dir=".", ft=None, fmt=None, dx10=False, sepalpha=False, alpha=False, cwd=None, quiet=False):
-    cmd = [Global_texconvpath, "-y", "-o", out_dir]
-    if ft:
-        cmd += ["-ft", ft]
-    if dx10:
-        cmd.append("-dx10")
-    if fmt:
-        cmd += ["-f", fmt]
-    if sepalpha:
-        cmd.append("-sepalpha")
-    if alpha:
-        cmd.append("-alpha")
-    cmd += ["--", in_path]
-
-    kwargs = {"cwd": cwd}
-    if quiet:
-        kwargs.update(stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-    else:
-        kwargs.update(capture_output=True, text=True)
-
-    PrettyPrint(f"texconv command: {cmd}")
-    PrettyPrint(f"cwd: {cwd}")
-    PrettyPrint(f"platform: {platform.system()}")
-
-    result = subprocess.run(cmd, **kwargs)
-
-    PrettyPrint(f"return code: {result.returncode}")
-    if getattr(result, "stdout", None):
-        PrettyPrint(f"STDOUT: {result.stdout}")
-    if getattr(result, "stderr", None):
-        PrettyPrint(f"STDERR: {result.stderr}")
-
-    if result.returncode != 0 and alpha and platform.system() == "Linux":
-        cmd = [flag for flag in cmd if flag != "-alpha"]
-        PrettyPrint("Retrying without -alpha (Linux fallback)")
-        PrettyPrint(f"fallback command: {cmd}")
-        result = subprocess.run(cmd, **kwargs)
-        PrettyPrint(f"fallback return code: {result.returncode}")
-
-    return result
-
-
 #region Classes and Functions: Stingray Textures
 
 def BlendImageToStingrayTexture(image, StingrayTex):
@@ -1821,7 +1778,7 @@ def BlendImageToStingrayTexture(image, StingrayTex):
     image.filepath_raw = tga_path
     image.save()
 
-    _texconv(tga_path, out_dir=tempdir, ft="dds", dx10=True, fmt=StingrayTex.Format, sepalpha=True, alpha=True, cwd=tempdir, quiet=True)
+    subprocess.run([Global_texconvpath, "-y", "-o", tempdir, "-ft", "dds", "-dx10", "-f", StingrayTex.Format, "-sepalpha", "-alpha", dds_path], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
     
     if os.path.isfile(dds_path):
         with open(dds_path, 'r+b') as f:
@@ -1846,13 +1803,7 @@ def LoadStingrayTexture(ID, TocData, GpuData, StreamData, Reload, MakeBlendObjec
         with open(dds_path, 'w+b') as f:
             f.write(dds)
 
-        result = _texconv(dds_path, out_dir=tempdir, ft="png", fmt="R8G8B8A8_UNORM", sepalpha=True, alpha=True, cwd=tempdir)
-        PrettyPrint(f"Return code: {result.returncode}")
-        if result.stdout:
-            PrettyPrint(f"STDOUT: {result.stdout}")
-        if result.stderr:
-            PrettyPrint(f"STDERR: {result.stderr}")
-
+        subprocess.run([Global_texconvpath, "-y", "-o", tempdir, "-ft", "png", "-f", "R8G8B8A8_UNORM", "-sepalpha", "-alpha", dds_path], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
         if os.path.isfile(png_path):
             image = bpy.data.images.load(png_path)
             image.name = str(ID)
@@ -3433,7 +3384,7 @@ class ExportTexturePNGOperator(Operator, ExportHelper):
                         f.write(Entry.LoadedData.ToDDS())
                     else:
                         f.write(Entry.LoadedData.ToDDSArray()[i])
-                _texconv(dds_path, out_dir=directory, ft="png", fmt="R8G8B8A8_UNORM", sepalpha=True, alpha=True, cwd=directory)
+                subprocess.run([Global_texconvpath, "-y", "-o", directory, "-ft", "png", "-f", "R8G8B8A8_UNORM", "-sepalpha", "-alpha", dds_path])
                 if os.path.isfile(dds_path):
                     self.report({'INFO'}, f"Saved PNG Texture to: {dds_path}")
                 else:
@@ -3493,7 +3444,7 @@ class BatchExportTexturePNGOperator(Operator):
                 dds_path = f"{tempdir}/{EntryID}.dds"
                 with open(dds_path, 'w+b') as f:
                     f.write(Entry.LoadedData.ToDDS())
-                _texconv(dds_path, out_dir=self.directory, ft="png", fmt="R8G8B8A8_UNORM", alpha=True, cwd=self.directory)
+                subprocess.run([Global_texconvpath, "-y", "-o", self.directory, "-ft", "png", "-f", "R8G8B8A8_UNORM", "-alpha", dds_path])
                 filepath = f"{self.directory}/{EntryID}.png"
                 if os.path.isfile(filepath):
                     exportedfiles += 1
@@ -3558,7 +3509,7 @@ def SaveImagePNG(filepath, object_id):
             tempdir = tempfile.gettempdir()
             PrettyPrint(filepath)
             PrettyPrint(StingrayTex.Format)
-            _texconv(filepath, out_dir=tempdir, ft="dds", dx10=True, fmt=StingrayTex.Format, sepalpha=True, alpha=True, cwd=os.path.dirname(filepath), quiet=True)
+            subprocess.run([Global_texconvpath, "-y", "-o", tempdir, "-ft", "dds", "-dx10", "-f", StingrayTex.Format, "-sepalpha", "-alpha", filepath], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
             fileName = os.path.basename(filepath).replace(".png", ".dds")
             dds_path = f"{tempdir}/{fileName}"
             PrettyPrint(dds_path)
