@@ -1882,7 +1882,38 @@ class Hd2VisualizerItem(PropertyGroup):
 
 class HD2_UL_Visualizers(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        layout.label(text=item.label)
+        row = layout.row(align=True)
+
+        split = row.split(factor=0.14, align=True)
+        col_label = split.row(align=True)
+        col_label.label(text=item.label)
+
+        split = split.split(factor=0.24, align=True)
+        col_type = split.row(align=True)
+        col_type.label(text=f"Type: {item.vis_type.title()}")
+
+        split = split.split(factor=0.42, align=True)
+        col_material = split.row(align=True)
+        col_material.label(
+            text=f"Material ID: {item.material_id}"
+            if item.vis_type in {"BILLBOARD", "UNKNOWN3", "UNKNOWN4", "MESH"} and item.material_id
+            else ""
+        )
+
+        split = split.split(factor=0.55, align=True)
+        col_unit = split.row(align=True)
+        col_unit.label(
+            text=f"Unit: {item.unit_id}"
+            if item.vis_type == "MESH" and item.unit_id
+            else ""
+        )
+
+        col_mesh = split.row(align=True)
+        col_mesh.label(
+            text=f"Mesh: {item.mesh_id}"
+            if item.vis_type == "MESH" and item.mesh_id
+            else ""
+        )
 #endregion
 
 #region Loaded Particles
