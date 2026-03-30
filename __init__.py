@@ -4964,7 +4964,6 @@ class MY_UL_List(UIList):
                 #row.operator("helldiver2.material_showeditor", icon='MOD_LINEART', text="").object_id = str(Entry.FileID)
                 #self.draw_material_editor(Entry, box, row)
             elif entry_type == ParticleID:
-                row.operator("helldiver2.particle_modder_edit", icon='PREFERENCES', text="").object_id = item.item_name
                 row.operator("helldiver2.particle_search_used_ids", icon='VIEWZOOM', text="").object_id = item.item_name
             elif entry_type == AnimationID:
                 row.operator("helldiver2.archive_animation_import", icon="IMPORT", text="").object_id = item.item_name
