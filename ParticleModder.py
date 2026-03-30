@@ -3062,38 +3062,55 @@ class HD2_OT_CellSelect(Operator):
         self._alt = event.alt
         return self.execute(context)
 
+    def _range_keys(self, anchor_key, target_key):
+        try:
+            g1, gi1, pi1, f1 = anchor_key.split(":")
+            g2, gi2, pi2, f2 = target_key.split(":")
+            if g1 != g2:
+                return []
+            gi_start = min(int(gi1), int(gi2))
+            gi_end = max(int(gi1), int(gi2))
+            pi_start = min(int(pi1), int(pi2))
+            pi_end = max(int(pi1), int(pi2))
+            if g1 == "color":
+                fields = [f1] if f1 == f2 else ["time", "color"]
+            else:
+                fields = [f1] if f1 == f2 else ["time", "value"]
+            keys = []
+            for gi in range(gi_start, gi_end + 1):
+                for pi in range(pi_start, pi_end + 1):
+                    for field in fields:
+                        keys.append(f"{g1}:{gi}:{pi}:{field}")
+            return keys
+        except Exception:
+            return []
+
     def execute(self, context):
         settings = context.scene.Hd2ParticleModderSettings
         cells = _parse_selected_cells(settings)
         key = self.key
         if self._shift and settings.last_selected_cell:
-            # range select within same group (rectangle across graph index + point index)
-            try:
-                g1, gi1, pi1, f1 = settings.last_selected_cell.split(":")
-                g2, gi2, pi2, f2 = key.split(":")
-                if g1 == g2:
-                    gi_start = min(int(gi1), int(gi2))
-                    gi_end = max(int(gi1), int(gi2))
-                    pi_start = min(int(pi1), int(pi2))
-                    pi_end = max(int(pi1), int(pi2))
-                    if g1 == "color":
-                        fields = [f1] if f1 == f2 else ["time", "color"]
-                    else:
-                        fields = [f1] if f1 == f2 else ["time", "value"]
-                    for gi in range(gi_start, gi_end + 1):
-                        for pi in range(pi_start, pi_end + 1):
-                            for field in fields:
-                                cells.append(f"{g1}:{gi}:{pi}:{field}")
-                    _set_selected_cells(settings, cells)
-                    if not self._alt:
-                        settings.last_selected_cell = key
-                    return {"FINISHED"}
-                else:
-                    cells.append(key)
-            except Exception:
+            range_keys = self._range_keys(settings.last_selected_cell, key)
+            if range_keys:
+                for range_key in range_keys:
+                    if range_key not in cells:
+                        cells.append(range_key)
+                _set_selected_cells(settings, cells)
+                if not self._alt:
+                    settings.last_selected_cell = key
+                return {"FINISHED"}
+            else:
                 cells.append(key)
         elif self._ctrl:
-            if key in cells:
+            if settings.last_selected_cell:
+                range_keys = self._range_keys(settings.last_selected_cell, key)
+                if range_keys:
+                    cells = [c for c in cells if c not in set(range_keys)]
+                elif key in cells:
+                    cells = [c for c in cells if c != key]
+                else:
+                    cells.append(key)
+            elif key in cells:
                 cells = [c for c in cells if c != key]
             else:
                 cells.append(key)
@@ -3522,10 +3539,6 @@ class HD2_PT_ParticleModder(Panel):
             box = col.box()
             sub = box.row(align=True)
             sub.label(text="Visualizers", icon="SHADING_RENDERED")
-            replace_row = box.row(align=True)
-            replace_row.prop(settings, "visualizer_find_material_id", text="Find Material ID")
-            replace_row.prop(settings, "visualizer_replace_material_id", text="Replace With")
-            replace_row.operator("hd2.particle_visualizer_replace_material_id", text="Replace")
             row = box.row()
             row.template_list("HD2_UL_Visualizers", "", settings, "visualizers", settings, "visualizers_index", rows=6)
             if settings.visualizers and 0 <= settings.visualizers_index < len(settings.visualizers):
