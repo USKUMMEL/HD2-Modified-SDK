@@ -124,9 +124,15 @@ class StingrayMeshFile:
         f.seek(f.tell() + 12)
 
         if f.IsReading() and self.MeshInfoOffset == 0:
+            if bpy.context.scene.Hd2ToolPanelSettings.SkipMeshImportErrors:
+                PrettyPrint(f"Skipping mesh import error due to SkipMeshImportErrors setting.", 'warn')
+                return
             raise Exception("Unsupported Mesh Format (No geometry)")
 
         if f.IsReading() and (self.StreamInfoOffset == 0 and self.CompositeRef == 0):
+            if bpy.context.scene.Hd2ToolPanelSettings.SkipMeshImportErrors:
+                PrettyPrint(f"Skipping mesh import error due to SkipMeshImportErrors setting.", 'warn')
+                return
             raise Exception("Unsupported Mesh Format (No buffer stream)")
 
         # Get bones file
@@ -379,6 +385,9 @@ class StingrayMeshFile:
                 self.StreamInfoOffset = 1
                 gpu = Entry.LoadedData.GpuData
             else:
+                if bpy.context.scene.Hd2ToolPanelSettings.SkipMeshImportErrors:
+                    PrettyPrint(f"Composite mesh file {self.CompositeRef} could not be found. Skipping mesh import error due to SkipMeshImportErrors setting.", 'warn')
+                    return
                 raise Exception(f"Composite mesh file {self.CompositeRef} could not be found")
 
         # Materials
@@ -669,7 +678,7 @@ class StingrayMeshFile:
             if HasPositions:  Stream_Info.Components.append(StreamComponentInfo("position", "vec3_float"))
             if HasNormals:    Stream_Info.Components.append(StreamComponentInfo("normal", "unk_normal"))
             for n in range(NumUVs):
-                UVComponent = StreamComponentInfo("uv", "vec2_half")
+                UVComponent = StreamComponentInfo("uv", "vec2_float")
                 UVComponent.Index = n
                 Stream_Info.Components.append(UVComponent)
             if IsSkinned:     Stream_Info.Components.append(StreamComponentInfo("bone_weight", "vec4_half"))
@@ -1087,6 +1096,7 @@ class StreamComponentInfo:
         return "unknown"
     def FormatFromName(self, name):
         if   name == "float":         return 0
+        elif name == "vec2_float":    return 1
         elif name == "vec3_float":    return 2
         elif name == "rgba_r8g8b8a8": return 4
         elif name == "vec4_uint32": return 20 # unconfirmed
@@ -1098,6 +1108,7 @@ class StreamComponentInfo:
         return -1
     def GetSize(self):
         if   self.Format == 0:  return 4
+        elif self.Format == 1:  return 8
         elif self.Format == 2:  return 12
         elif self.Format == 4:  return 4
         elif self.Format == 20: return 16
@@ -1201,7 +1212,7 @@ class RawMaterialClass:
                 try:
                     self.ShortID = Global_MaterialSlotNames[unit_id][self.MatID][index]
                 except (KeyError, IndexError):
-                    PrettyPrint(f"Unable to find material slot for material {name} with material count {index} for unit {unit_id}, using random material slot name")
+                    PrettyPrint(f"Unable to find material slot for material {name} with material count {index} for unit {unit_id}, using random material slot name", 'warn')
                     self.ShortID = random.randint(1, 0xffffffff)
             except:
                 raise Exception("Material name must be a number")
