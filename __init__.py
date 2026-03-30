@@ -119,9 +119,12 @@ from .ParticleModder import (
     HD2_MT_ColorLoad,
     HD2_OT_GraphEditor,
     HD2_OT_LoadedParticleSelect,
+    HD2_OT_ParticleListClick,
     HD2_OT_ParticleApplyTargetToggle,
     HD2_OT_ParticleApplyDestinationTogglePick,
+    HD2_OT_ParticleApplyDestinationRemove,
     HD2_OT_ParticleApplyDestinationSet,
+    HD2_OT_ParticleApplyToSelected,
     HD2_OT_VisualizerReplaceMaterialId,
     HD2_OT_CellSelect,
     HD2_OT_RowSelect,
@@ -3820,6 +3823,9 @@ class ParticleModderApplyEntryOperator(Operator):
     bl_description = "Apply particle edits to the archive entry (patch)"
     bl_options = {'REGISTER', 'UNDO'}
 
+    target_file_id: StringProperty(default="")
+    target_archive_name: StringProperty(default="")
+
     def execute(self, context):
         settings = context.scene.Hd2ParticleModderSettings
         if not settings.has_data:
@@ -3832,10 +3838,10 @@ class ParticleModderApplyEntryOperator(Operator):
             return {'CANCELLED'}
 
         try:
-            if settings.apply_destination_file_id and settings.apply_destination_archive_name:
-                entry_file_id = int(settings.apply_destination_file_id)
+            if self.target_file_id and self.target_archive_name:
+                entry_file_id = int(self.target_file_id)
                 entry_type_id = ParticleID
-                target_archive_name = str(settings.apply_destination_archive_name)
+                target_archive_name = str(self.target_archive_name)
             else:
                 if not settings.is_archive:
                     self.report({'ERROR'}, "No archive destination selected")
@@ -5738,9 +5744,12 @@ classes = (
     HD2_MT_ColorLoad,
     HD2_OT_GraphEditor,
     HD2_OT_LoadedParticleSelect,
+    HD2_OT_ParticleListClick,
     HD2_OT_ParticleApplyTargetToggle,
     HD2_OT_ParticleApplyDestinationTogglePick,
+    HD2_OT_ParticleApplyDestinationRemove,
     HD2_OT_ParticleApplyDestinationSet,
+    HD2_OT_ParticleApplyToSelected,
     HD2_OT_VisualizerReplaceMaterialId,
     HD2_OT_CellSelect,
     HD2_OT_RowSelect,

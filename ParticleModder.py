@@ -1974,29 +1974,24 @@ class HD2_UL_ArchiveParticles(UIList):
         )
         toggle.key = archive_key
         body = split.row(align=True)
-        is_destination = (
-            archive_name
-            and str(settings.apply_destination_file_id) == str(item.item_name)
-            and str(settings.apply_destination_archive_name) == str(archive_name)
-        )
+        selection_key = _make_archive_particle_selection_key(archive_name, item.item_name) if archive_name else ""
+        is_selected = bool(selection_key and _is_particle_list_selected(settings, selection_key))
         is_active = bool(settings.is_archive and str(settings.entry_file_id) == str(item.item_name))
-        if settings.apply_destination_pick_mode and archive_name:
-            op = body.operator(
-                "hd2.particle_apply_destination_set",
-                text=item.item_filter_name if item.item_filter_name else item.item_name,
-                emboss=True,
-                depress=is_destination,
-            )
-            op.file_id = item.item_name
-            op.archive_name = archive_name
+        if is_selected:
+            body.label(text="", icon="DECORATE_KEYFRAME")
         else:
-            op = body.operator(
-                "helldiver2.particle_modder_edit",
-                text=item.item_filter_name if item.item_filter_name else item.item_name,
-                emboss=True,
-                depress=is_active,
-            )
-            op.object_id = item.item_name
+            body.label(text="", icon="BLANK1")
+        op = body.operator(
+            "hd2.particle_list_click",
+            text=item.item_filter_name if item.item_filter_name else item.item_name,
+            emboss=True,
+            depress=is_active,
+        )
+        op.list_kind = "ARCHIVE"
+        op.key = selection_key
+        op.file_id = item.item_name
+        op.archive_name = archive_name
+        op.list_index = index
         body.operator("helldiver2.particle_search_used_ids", icon="VIEWZOOM", text="").object_id = item.item_name
 
 
@@ -2014,13 +2009,18 @@ class HD2_UL_DumpParticles(UIList):
         )
         toggle.key = item.key
         body = split.row(align=True)
+        body.label(text="", icon="BLANK1")
         op = body.operator(
-            "hd2.particle_loaded_select",
+            "hd2.particle_list_click",
             text=item.file_id if item.file_id else item.label,
             emboss=True,
             depress=(getattr(data, "filepath", "") == item.key),
         )
-        op.key = item.key
+        op.list_kind = "DUMP"
+        op.key = _make_dump_particle_selection_key(item.key)
+        op.file_id = item.file_id if item.file_id else item.label
+        op.archive_name = ""
+        op.list_index = index
 #endregion
 
 #region Operators: Auto Edit Particle Selection
@@ -2041,7 +2041,12 @@ class Hd2ParticleModderSettings(PropertyGroup):
     entry_archive_name: StringProperty(name="Entry Archive", default="")
     apply_destination_file_id: StringProperty(name="Apply Destination File ID", default="")
     apply_destination_archive_name: StringProperty(name="Apply Destination Archive", default="")
+    apply_source_pick_mode: BoolProperty(name="Pick Apply Source", default=False)
     apply_destination_pick_mode: BoolProperty(name="Pick Apply Destination", default=False)
+    show_apply_destinations: BoolProperty(name="Show Apply Destinations", default=False)
+    particle_list_selection_keys: StringProperty(name="Particle List Selection", default="")
+    particle_list_anchor_key: StringProperty(name="Particle List Anchor", default="")
+    particle_list_anchor_list: StringProperty(name="Particle List Anchor List", default="")
     variables: CollectionProperty(type=Hd2ParticleVariableItem)
     variables_index: IntProperty(name="Variable Index", default=0)
     graphs: CollectionProperty(type=Hd2GraphItem)
@@ -2077,7 +2082,7 @@ class Hd2ParticleModderSettings(PropertyGroup):
         name="Particle Source",
         items=[
             ("ARCHIVE", "Archive Particles", ""),
-            ("DUMP", "Dump Particles", ""),
+            ("DUMP", "Imported .particle", ""),
         ],
         default="ARCHIVE",
     )
@@ -2343,6 +2348,122 @@ class HD2_OT_LoadedParticleSelect(Operator):
         return {"FINISHED"}
 
 
+class HD2_OT_ParticleListClick(Operator):
+    bl_idname = "hd2.particle_list_click"
+    bl_label = "Particle List Click"
+    bl_options = {"REGISTER", "UNDO"}
+
+    list_kind: StringProperty(default="ARCHIVE")
+    key: StringProperty(default="")
+    file_id: StringProperty(default="")
+    archive_name: StringProperty(default="")
+    list_index: IntProperty(default=-1)
+
+    def invoke(self, context, event):
+        self._ctrl = event.ctrl
+        self._shift = event.shift
+        self._right = event.type == "RIGHTMOUSE"
+        return self.execute(context)
+
+    def _list_keys(self, context):
+        settings = context.scene.Hd2ParticleModderSettings
+        if self.list_kind == "ARCHIVE":
+            archive_name = self.archive_name or _current_archive_name(context.scene)
+            list_id = f"list_{ParticleID}"
+            if not hasattr(context.scene, list_id):
+                return []
+            return [
+                _make_archive_particle_selection_key(archive_name, item.item_name)
+                for item in getattr(context.scene, list_id)
+            ]
+        if self.list_kind == "DUMP":
+            return [_make_dump_particle_selection_key(item.key) for item in settings.loaded_dump_particles]
+        return []
+
+    def _handle_selection(self, context):
+        settings = context.scene.Hd2ParticleModderSettings
+        if self.list_kind != "ARCHIVE":
+            self.report({"INFO"}, "Only archive particles can be added as Apply To destinations")
+            return {"CANCELLED"}
+        keys = _parse_particle_list_selection_keys(settings)
+        current_key = self.key
+        if not current_key:
+            return {"CANCELLED"}
+        if self._shift and settings.particle_list_anchor_key and settings.particle_list_anchor_list == self.list_kind:
+            ordered_keys = self._list_keys(context)
+            try:
+                start = ordered_keys.index(settings.particle_list_anchor_key)
+                end = ordered_keys.index(current_key)
+                lo, hi = sorted((start, end))
+                for key in ordered_keys[lo:hi + 1]:
+                    keys.add(key)
+            except ValueError:
+                keys.add(current_key)
+        elif self._ctrl:
+            if current_key in keys:
+                keys.remove(current_key)
+            else:
+                keys.add(current_key)
+        else:
+            keys = {current_key}
+        _set_particle_list_selection_keys(settings, keys)
+        settings.particle_list_anchor_key = current_key
+        settings.particle_list_anchor_list = self.list_kind
+        return {"FINISHED"}
+
+    def _toggle_destination(self, context):
+        settings = context.scene.Hd2ParticleModderSettings
+        current_key = self.key
+        if not current_key:
+            return {"CANCELLED"}
+        if self.list_kind != "ARCHIVE":
+            self.report({"INFO"}, "Only archive particles can be added as Apply To destinations")
+            return {"CANCELLED"}
+        keys = _parse_particle_list_selection_keys(settings)
+        if current_key in keys:
+            keys.remove(current_key)
+        else:
+            keys.add(current_key)
+        _set_particle_list_selection_keys(settings, keys)
+        settings.particle_list_anchor_key = current_key
+        settings.particle_list_anchor_list = self.list_kind
+        return {"FINISHED"}
+
+    def _load_source_into_editor(self, context, settings):
+        if self.list_kind == "ARCHIVE":
+            if (
+                settings.is_archive
+                and str(settings.entry_file_id) == str(self.file_id)
+                and str(settings.entry_archive_name) == str(self.archive_name)
+            ):
+                return apply_settings_to_state(context, upgrade_to_current=False)
+            result = bpy.ops.helldiver2.particle_modder_edit(object_id=self.file_id)
+            return ("FINISHED" in result), "" if "FINISHED" in result else "Failed to load source particle"
+        source_key = self.key[len("dump_target:"):] if self.key.startswith("dump_target:") else self.key
+        if settings.filepath == source_key:
+            return apply_settings_to_state(context, upgrade_to_current=False)
+        result = bpy.ops.hd2.particle_loaded_select(key=source_key)
+        return ("FINISHED" in result), "" if "FINISHED" in result else "Failed to load source particle"
+
+    def execute(self, context):
+        settings = context.scene.Hd2ParticleModderSettings
+        if self._ctrl or self._shift:
+            return self._handle_selection(context)
+
+        if self._right:
+            return self._toggle_destination(context)
+
+        if settings.apply_source_pick_mode:
+            settings.apply_source_pick_mode = False
+            return self._load_source_into_editor(context, settings)
+
+        if self.list_kind == "ARCHIVE":
+            return bpy.ops.helldiver2.particle_modder_edit(object_id=self.file_id)
+
+        source_key = self.key[len("dump_target:"):] if self.key.startswith("dump_target:") else self.key
+        return bpy.ops.hd2.particle_loaded_select(key=source_key)
+
+
 class HD2_OT_ParticleApplyTargetToggle(Operator):
     bl_idname = "hd2.particle_apply_target_toggle"
     bl_label = "Toggle Apply-All Target"
@@ -2367,15 +2488,62 @@ class HD2_OT_ParticleApplyDestinationTogglePick(Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     clear: BoolProperty(default=False)
+    mode: EnumProperty(
+        name="Picker Mode",
+        items=[
+            ("DESTINATION", "Destination", ""),
+            ("SOURCE", "Source", ""),
+        ],
+        default="DESTINATION",
+    )
 
     def execute(self, context):
         settings = context.scene.Hd2ParticleModderSettings
         if self.clear:
             settings.apply_destination_file_id = ""
             settings.apply_destination_archive_name = ""
+            settings.apply_source_pick_mode = False
             settings.apply_destination_pick_mode = False
+            settings.show_apply_destinations = False
+            settings.particle_list_selection_keys = ""
+            settings.particle_list_anchor_key = ""
+            settings.particle_list_anchor_list = ""
         else:
-            settings.apply_destination_pick_mode = not settings.apply_destination_pick_mode
+            if self.mode == "SOURCE":
+                settings.apply_source_pick_mode = not settings.apply_source_pick_mode
+                if settings.apply_source_pick_mode:
+                    settings.apply_destination_pick_mode = False
+            else:
+                settings.show_apply_destinations = not settings.show_apply_destinations
+                settings.apply_destination_pick_mode = False
+        return {"FINISHED"}
+
+
+class HD2_OT_ParticleApplyDestinationRemove(Operator):
+    bl_idname = "hd2.particle_apply_destination_remove"
+    bl_label = "Remove Apply Destination"
+    bl_options = {"REGISTER", "UNDO"}
+
+    key: StringProperty(default="")
+    clear_all: BoolProperty(default=False)
+
+    def execute(self, context):
+        settings = context.scene.Hd2ParticleModderSettings
+        if self.clear_all:
+            settings.particle_list_selection_keys = ""
+            settings.particle_list_anchor_key = ""
+            settings.particle_list_anchor_list = ""
+            settings.show_apply_destinations = False
+            return {"FINISHED"}
+        keys = _parse_particle_list_selection_keys(settings)
+        if self.key in keys:
+            keys.remove(self.key)
+            _set_particle_list_selection_keys(settings, keys)
+            if settings.particle_list_anchor_key == self.key:
+                settings.particle_list_anchor_key = ""
+                settings.particle_list_anchor_list = ""
+            if not keys:
+                settings.show_apply_destinations = False
         return {"FINISHED"}
 
 
@@ -2394,6 +2562,58 @@ class HD2_OT_ParticleApplyDestinationSet(Operator):
         settings.apply_destination_file_id = str(self.file_id)
         settings.apply_destination_archive_name = str(self.archive_name)
         settings.apply_destination_pick_mode = False
+        return {"FINISHED"}
+
+
+class HD2_OT_ParticleApplyToSelected(Operator):
+    bl_idname = "hd2.particle_apply_to_selected"
+    bl_label = "Apply To Selected Particles"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        settings = context.scene.Hd2ParticleModderSettings
+        selected_targets = sorted(_parse_particle_list_selection_keys(settings))
+        if not settings.has_data:
+            self.report({"ERROR"}, "No source particle loaded in the editor")
+            return {"CANCELLED"}
+        if not selected_targets:
+            self.report({"ERROR"}, "No destination particles selected")
+            return {"CANCELLED"}
+
+        ok, err = apply_settings_to_state(context, upgrade_to_current=False)
+        if not ok:
+            self.report({"ERROR"}, err)
+            return {"CANCELLED"}
+
+        applied = 0
+        skipped = 0
+        source_archive = str(getattr(settings, "entry_archive_name", ""))
+        source_file_id = str(getattr(settings, "entry_file_id", ""))
+
+        for target_key in selected_targets:
+            parsed = _parse_particle_selection_key(target_key)
+            if parsed["kind"] != "ARCHIVE":
+                skipped += 1
+                continue
+            if settings.is_archive and source_file_id == str(parsed["file_id"]) and source_archive == str(parsed["archive_name"]):
+                skipped += 1
+                continue
+            result = bpy.ops.helldiver2.particle_modder_apply_entry(
+                target_file_id=str(parsed["file_id"]),
+                target_archive_name=str(parsed["archive_name"]),
+            )
+            if "FINISHED" in result:
+                applied += 1
+            else:
+                skipped += 1
+
+        if applied == 0:
+            self.report({"ERROR"}, "No destination particles were updated")
+            return {"CANCELLED"}
+        if skipped:
+            self.report({"INFO"}, f"Applied source particle to {applied} destination(s), skipped {skipped}")
+        else:
+            self.report({"INFO"}, f"Applied source particle to {applied} destination(s)")
         return {"FINISHED"}
 #endregion
 
@@ -2753,6 +2973,53 @@ def _is_apply_target(settings, key):
     return key in _parse_apply_target_keys(settings)
 
 
+def _make_archive_particle_selection_key(archive_name, file_id):
+    return f"archive_target:{archive_name}:{file_id}"
+
+
+def _make_dump_particle_selection_key(key):
+    return f"dump_target:{key}"
+
+
+def _parse_particle_selection_key(key):
+    if key.startswith("archive_target:"):
+        _prefix, archive_name, file_id = key.split(":", 2)
+        return {"kind": "ARCHIVE", "archive_name": archive_name, "file_id": file_id, "key": key}
+    if key.startswith("dump_target:"):
+        return {"kind": "DUMP", "key": key[len('dump_target:'):]}
+    return {"kind": "UNKNOWN", "key": key}
+
+
+def _parse_particle_list_selection_keys(settings):
+    value = getattr(settings, "particle_list_selection_keys", "")
+    if not value:
+        return set()
+    return {part for part in value.split("|") if part}
+
+
+def _set_particle_list_selection_keys(settings, keys):
+    settings.particle_list_selection_keys = "|".join(sorted(k for k in keys if k))
+
+
+def _is_particle_list_selected(settings, key):
+    return key in _parse_particle_list_selection_keys(settings)
+
+
+def _selected_particle_target_count(settings):
+    return len(_parse_particle_list_selection_keys(settings))
+
+
+def _describe_particle_selection_key(key):
+    parsed = _parse_particle_selection_key(key)
+    if parsed["kind"] == "ARCHIVE":
+        archive_name = str(parsed.get("archive_name", "") or "")
+        file_id = str(parsed.get("file_id", "") or "")
+        return f"{file_id} / {archive_name}" if archive_name else file_id
+    if parsed["kind"] == "DUMP":
+        return _dump_particle_id_from_label(parsed.get("key", ""))
+    return str(key)
+
+
 def _current_archive_name(scene):
     tool_settings = getattr(scene, "Hd2ToolPanelSettings", None)
     if tool_settings is None:
@@ -2761,21 +3028,24 @@ def _current_archive_name(scene):
     return str(value) if value else ""
 
 
-def _has_apply_destination(settings):
-    return bool(
-        str(getattr(settings, "apply_destination_file_id", "")).strip()
-        and str(getattr(settings, "apply_destination_archive_name", "")).strip()
-    )
-
-
 def _describe_apply_destination(settings):
-    if _has_apply_destination(settings):
-        return f"{settings.apply_destination_file_id} / {settings.apply_destination_archive_name}"
+    selected_count = _selected_particle_target_count(settings)
+    if selected_count > 0:
+        return f"{selected_count} destination particle(s) selected"
+    return "No destinations selected"
+
+
+def _describe_apply_source(settings):
+    if settings.apply_source_pick_mode:
+        return "Pick source particle from the list..."
     if settings.is_archive and settings.entry_file_id:
         if settings.entry_archive_name:
-            return f"{settings.entry_file_id} / {settings.entry_archive_name} (current)"
-        return f"{settings.entry_file_id} (current)"
-    return "Current particle"
+            return f"{settings.entry_file_id} / {settings.entry_archive_name}"
+        return str(settings.entry_file_id)
+    filepath = str(getattr(settings, "filepath", "") or "")
+    if filepath:
+        return _dump_particle_id_from_label(filepath)
+    return "No source particle loaded"
 
 
 class HD2_OT_CellSelect(Operator):
@@ -3041,21 +3311,49 @@ class HD2_PT_ParticleModder(Panel):
         btn_row = header.row(align=True)
         btn_row.operator("hd2.particle_modder_load", icon="FILE_FOLDER", text="Open")
         btn_row.operator("hd2.particle_modder_save", icon="FILE_TICK", text="Export .particle")
-        if settings.is_archive or _has_apply_destination(settings):
+        if settings.is_archive:
             btn_row.operator("helldiver2.particle_modder_apply_entry", icon="FILE_TICK", text="Apply")
         else:
             btn_row.operator("hd2.particle_modder_apply", icon="CHECKMARK", text="Apply")
-        apply_to_row = header.row(align=True)
-        apply_to_row.label(text="Apply To:")
-        pick = apply_to_row.operator(
+        apply_to = btn_row.row(align=True)
+        apply_to.enabled = bool(settings.has_data and _selected_particle_target_count(settings) > 0)
+        apply_to.operator("hd2.particle_apply_to_selected", icon="PASTEDOWN", text="Apply To")
+
+        pick_row = header.row(align=True)
+        pick_row.label(text="Source:")
+        source_pick = pick_row.operator(
             "hd2.particle_apply_destination_toggle_pick",
-            text="Pick from archive list..." if settings.apply_destination_pick_mode else _describe_apply_destination(settings),
+            text=_describe_apply_source(settings),
             icon="EYEDROPPER",
-            depress=settings.apply_destination_pick_mode,
+            depress=settings.apply_source_pick_mode,
+        )
+        source_pick.clear = False
+        source_pick.mode = "SOURCE"
+        pick_row.separator(factor=0.75)
+        pick_row.label(text="Destinations:")
+        pick = pick_row.operator(
+            "hd2.particle_apply_destination_toggle_pick",
+            text=_describe_apply_destination(settings),
+            icon="RESTRICT_SELECT_OFF",
+            depress=settings.show_apply_destinations,
         )
         pick.clear = False
-        clear = apply_to_row.operator("hd2.particle_apply_destination_toggle_pick", text="", icon="X")
-        clear.clear = True
+        pick.mode = "DESTINATION"
+        clear = pick_row.operator("hd2.particle_apply_destination_remove", text="", icon="X")
+        clear.clear_all = True
+        if settings.show_apply_destinations:
+            dest_list = header.box()
+            selected_keys = sorted(_parse_particle_list_selection_keys(settings))
+            if not selected_keys:
+                dest_list.label(text="No destination particles selected. Use Ctrl/Shift or right-click on archive particles.", icon="INFO")
+            else:
+                for key in selected_keys:
+                    dest_item = dest_list.row(align=True)
+                    dest_item.label(text=_describe_particle_selection_key(key), icon="DECORATE_KEYFRAME")
+                    remove = dest_item.operator("hd2.particle_apply_destination_remove", text="", icon="X")
+                    remove.key = key
+                    remove.clear_all = False
+        clear.key = ""
 
         particle_box = layout.box()
         particle_box.label(text="Particle Sources", icon="FILE_FOLDER")
@@ -3079,8 +3377,11 @@ class HD2_PT_ParticleModder(Panel):
             particle_box.template_list("HD2_UL_DumpParticles", "", settings, "loaded_dump_particles", settings, "loaded_dump_particles_index", rows=6)
             if not settings.loaded_dump_particles:
                 particle_box.label(text="No dump particle loaded. Use Open to load .particle/.particles file.")
-        if settings.apply_destination_pick_mode:
-            particle_box.label(text="Picking apply destination from Archive Particles.", icon="EYEDROPPER")
+        selected_targets = _selected_particle_target_count(settings)
+        if settings.apply_source_pick_mode:
+            particle_box.label(text="Source picker active: click a particle row to load it into the editor.", icon="EYEDROPPER")
+        elif selected_targets > 0:
+            particle_box.label(text=f"{selected_targets} destination particle(s) selected. Use Ctrl/Shift or right-click on archive particles to edit the destination list.", icon="DECORATE_KEYFRAME")
         particle_box.label(text="Checked particles are used by Color > Apply All.", icon="CHECKBOX_HLT")
 
         col = layout.column()
@@ -3339,9 +3640,12 @@ CLASSES = (
     HD2_MT_ColorLoad,
     HD2_OT_GraphEditor,
     HD2_OT_LoadedParticleSelect,
+    HD2_OT_ParticleListClick,
     HD2_OT_ParticleApplyTargetToggle,
     HD2_OT_ParticleApplyDestinationTogglePick,
+    HD2_OT_ParticleApplyDestinationRemove,
     HD2_OT_ParticleApplyDestinationSet,
+    HD2_OT_ParticleApplyToSelected,
     HD2_OT_VisualizerReplaceMaterialId,
     HD2_OT_CellSelect,
     HD2_OT_RowSelect,
